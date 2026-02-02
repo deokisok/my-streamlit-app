@@ -1,7 +1,5 @@
 import streamlit as st
 import requests
-import matplotlib.pyplot as plt
-import numpy as np
 
 # =========================
 # 페이지 설정
@@ -21,15 +19,7 @@ GENRES = {
 }
 POSTER_BASE = "https://image.tmdb.org/t/p/w500"
 
-# =========================
-# 성향 축
-# =========================
-TRAITS = ["Energy", "Emotion", "Action", "Fantasy", "Humor"]
-
-def init_traits():
-    return {t: 0 for t in TRAITS}
-
-def fetch_movies(api_key, genre_id, n=5):
+def fetch_movies(api_key: str, genre_id: int, n: int = 5):
     url = "https://api.themoviedb.org/3/discover/movie"
     params = {
         "api_key": api_key,
@@ -38,105 +28,145 @@ def fetch_movies(api_key, genre_id, n=5):
         "sort_by": "popularity.desc",
         "page": 1,
     }
-    r = requests.get(url, params=params, timeout=10)
+    r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()
     return r.json().get("results", [])[:n]
 
 # =========================
-# 질문 & 점수 매핑
+# 답변 → 장르 분석
 # =========================
-QUESTIONS = [
-    ("주말에 에너지는 어디서 얻나?", 
-     ["사람 만남", "혼자 충전", "새로운 자극", "집에서 안정"],
-     [{"Energy":2},{"Energy":-2},{"Action":1},{"Action":-1}]
-    ),
-    ("스트레스 해소 방식은?", 
-     ["수다", "혼자 생각", "운동", "잠"],
-     [{"Energy":1,"Humor":1},{"Emotion":1},{"Action":2},{"Action":-1}]
-    ),
-    ("영화 볼 때 더 끌리는 쪽은?", 
-     ["감정선", "메시지", "비주얼", "웃음"],
-     [{"Emotion":2},{"Fantasy":1},{"Fantasy":2},{"Humor":2}]
-    ),
-    ("여행 스타일은?", 
-     ["계획형", "즉흥", "액티비티", "힐링"],
-     [{"Emotion":1},{"Fantasy":1},{"Action":2},{"Action":-1}]
-    ),
-    ("친구들 사이에서 나는?", 
-     ["리더", "분위기메이커", "경청자", "자유인"],
-     [{"Energy":1},{"Humor":2},{"Emotion":2},{"Fantasy":1}]
-    ),
-    ("선호하는 대화 주제는?", 
-     ["현실", "감정", "상상", "유머"],
-     [{"Emotion":-1},{"Emotion":2},{"Fantasy":2},{"Humor":2}]
-    ),
-    ("결정할 때 나는?", 
-     ["빠르게", "신중히", "감정 따라", "상황 따라"],
-     [{"Action":1},{"Action":-1},{"Emotion":2},{"Fantasy":1}]
-    ),
-    ("좋아하는 영화 분위기", 
-     ["현실적", "잔잔", "화려", "엉뚱"],
-     [{"Fantasy":-1},{"Emotion":1},{"Fantasy":2},{"Humor":2}]
-    ),
-    ("혼자 있는 시간은?", 
-     ["필수", "가끔", "별로", "싫음"],
-     [{"Energy":-2},{"Energy":-1},{"Energy":1},{"Energy":2}]
-    ),
-    ("웃음 코드", 
-     ["블랙", "잔잔", "과장", "드립"],
-     [{"Humor":1},{"Humor":-1},{"Humor":2},{"Humor":1}]
-    ),
-]
+def analyze_genre(ans):
+    score = {k: 0 for k in GENRES.keys()}
+
+    # Q1 여가
+    if ans["q1"] in ["집에서 아무것도 안 하기", "혼자 조용히 쉬기"]:
+        score["드라마"] += 2; score["로맨스"] += 1
+    elif ans["q1"] in ["친구들과 수다", "보드게임/파티"]:
+        score["코미디"] += 2
+    elif ans["q1"] in ["즉흥 여행", "새로운 동네 탐방"]:
+        score["액션"] += 1; score["판타지"] += 1
+    elif ans["q1"] in ["혼자 취미 몰입", "전시/책/영화"]:
+        score["SF"] += 2; score["드라마"] += 1
+
+    # Q2 스트레스
+    if ans["q2"] in ["운동으로 풀기", "몸을 많이 움직이기"]:
+        score["액션"] += 2
+    elif ans["q2"] in ["웃긴 영상 보기", "친구랑 수다"]:
+        score["코미디"] += 2
+    elif ans["q2"] in ["감정 정리", "혼자 생각"]:
+        score["드라마"] += 2
+    elif ans["q2"] in ["맛있는 거 먹기", "카페/산책"]:
+        score["로맨스"] += 1; score["드라마"] += 1
+
+    # Q3 영화 취향
+    if ans["q3"] == "눈과 귀가 즐거운 영화":
+        score["SF"] += 2; score["판타지"] += 2
+    elif ans["q3"] == "현실적인 이야기":
+        score["드라마"] += 3
+    elif ans["q3"] == "아무 생각 없이 웃기는 영화":
+        score["코미디"] += 3
+    elif ans["q3"] == "긴장감 넘치는 전개":
+        score["액션"] += 3
+    elif ans["q3"] == "설레는 감정":
+        score["로맨스"] += 3
+
+    # Q4 여행 스타일
+    if ans["q4"] == "계획 빡빡":
+        score["SF"] += 1; score["드라마"] += 1
+    elif ans["q4"] == "즉흥/자유":
+        score["코미디"] += 1; score["액션"] += 1
+    elif ans["q4"] == "액티비티 위주":
+        score["액션"] += 2
+    elif ans["q4"] == "힐링/감성":
+        score["로맨스"] += 2; score["드라마"] += 1
+
+    # Q5 성향
+    if ans["q5"] == "분위기 메이커":
+        score["코미디"] += 2
+    elif ans["q5"] == "리더형":
+        score["액션"] += 1; score["판타지"] += 1
+    elif ans["q5"] == "공감형":
+        score["드라마"] += 2; score["로맨스"] += 1
+    elif ans["q5"] == "독립형":
+        score["SF"] += 2
+
+    return max(score.items(), key=lambda x: x[1])[0]
 
 # =========================
-# 장르 매칭
+# 사이드바
 # =========================
-def decide_genre(traits):
-    if traits["Fantasy"] > 3:
-        return "SF"
-    if traits["Humor"] > 3:
-        return "코미디"
-    if traits["Action"] > 3:
-        return "액션"
-    if traits["Emotion"] > 3:
-        return "로맨스"
-    return "드라마"
-
-# =========================
-# 레이더 차트
-# =========================
-def draw_radar(traits):
-    labels = list(traits.keys())
-    values = list(traits.values())
-    values += values[:1]
-
-    angles = np.linspace(0, 2*np.pi, len(labels)+1)
-
-    fig, ax = plt.subplots(subplot_kw=dict(polar=True))
-    ax.plot(angles, values, linewidth=2)
-    ax.fill(angles, values, alpha=0.25)
-    ax.set_thetagrids(angles[:-1]*180/np.pi, labels)
-    ax.set_title("🧠 나의 성향 레이더 차트")
-    return fig
+with st.sidebar:
+    st.header("🔑 TMDB API 설정")
+    tmdb_key = st.text_input("TMDB API Key", type="password")
 
 # =========================
 # UI
 # =========================
-with st.sidebar:
-    tmdb_key = st.text_input("TMDB API Key", type="password")
-
 st.title("🎬 나와 어울리는 영화는?")
-st.write("질문이 많아질수록, 당신의 취향은 더 정확해져요.")
+st.write("조금 더 세분화된 질문으로, 당신의 영화 취향을 알아볼게요 🎥🍿")
 st.divider()
 
-traits = init_traits()
-answers = []
+q1 = st.radio(
+    "1️⃣ 주말에 가장 끌리는 활동은?",
+    [
+        "집에서 아무것도 안 하기",
+        "혼자 조용히 쉬기",
+        "친구들과 수다",
+        "보드게임/파티",
+        "즉흥 여행",
+        "새로운 동네 탐방",
+        "혼자 취미 몰입",
+        "전시/책/영화"
+    ]
+)
 
-for i, (q, options, effects) in enumerate(QUESTIONS):
-    choice = st.radio(f"{i+1}. {q}", options)
-    idx = options.index(choice)
-    for k, v in effects[idx].items():
-        traits[k] += v
+q2 = st.radio(
+    "2️⃣ 스트레스를 풀 때 가장 가까운 방법은?",
+    [
+        "혼자 생각 정리",
+        "감정 정리/일기",
+        "친구랑 수다",
+        "웃긴 영상 보기",
+        "운동으로 풀기",
+        "몸을 많이 움직이기",
+        "맛있는 거 먹기",
+        "카페나 산책"
+    ]
+)
+
+q3 = st.radio(
+    "3️⃣ 영화를 고를 때 가장 중요한 포인트는?",
+    [
+        "현실적인 이야기",
+        "감정 몰입",
+        "설레는 감정",
+        "아무 생각 없이 웃김",
+        "긴장감 넘치는 전개",
+        "눈과 귀가 즐거운 영화"
+    ]
+)
+
+q4 = st.radio(
+    "4️⃣ 여행을 간다면 나는?",
+    [
+        "계획 빡빡하게",
+        "일정은 대충",
+        "즉흥/자유",
+        "액티비티 위주",
+        "힐링/감성 여행"
+    ]
+)
+
+q5 = st.radio(
+    "5️⃣ 친구들 사이에서 나는?",
+    [
+        "분위기 메이커",
+        "리더형",
+        "공감형",
+        "독립형",
+        "필요할 때 나타나는 타입"
+    ]
+)
 
 st.divider()
 
@@ -145,24 +175,24 @@ if st.button("🎞️ 결과 보기"):
         st.error("TMDB API Key를 입력해 주세요!")
         st.stop()
 
-    genre = decide_genre(traits)
+    answers = {"q1": q1, "q2": q2, "q3": q3, "q4": q4, "q5": q5}
+    genre = analyze_genre(answers)
     genre_id = GENRES[genre]
 
-    st.subheader(f"✨ 당신의 영화 성향 장르: **{genre}**")
-    st.pyplot(draw_radar(traits))
-
-    st.divider()
-    st.subheader("🍿 추천 영화")
+    st.subheader(f"✨ 당신과 어울리는 장르는 **{genre}**")
+    st.write("이제 당신의 취향과 맞는 인기 영화를 보여드릴게요 🍿")
 
     movies = fetch_movies(tmdb_key, genre_id)
+
     for m in movies:
-        cols = st.columns([1,2])
+        cols = st.columns([1, 2])
         with cols[0]:
             if m.get("poster_path"):
                 st.image(POSTER_BASE + m["poster_path"], use_container_width=True)
         with cols[1]:
             st.markdown(f"### {m.get('title')}")
             st.write(f"⭐ 평점: {m.get('vote_average')}")
-            st.write(m.get("overview", "줄거리 없음"))
-            st.caption("💡 추천 이유: 당신의 성향 레이더와 이 장르가 가장 잘 맞아요.")
+            st.write(m.get("overview", "줄거리 정보가 없어요."))
+            st.caption("💡 추천 이유: 당신의 답변이 이 장르와 잘 맞아요.")
+
         st.divider()
