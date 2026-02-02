@@ -1,6 +1,5 @@
 import streamlit as st
 import requests
-import numpy as np
 import plotly.graph_objects as go
 
 # =========================
@@ -49,52 +48,50 @@ QUESTIONS = [
     ("주말에 에너지는 어디서 얻나?",
      ["사람 만남", "혼자 충전", "새로운 자극", "집에서 안정"],
      [{"Energy": 2}, {"Energy": -2}, {"Action": 1}, {"Action": -1}]
-     ),
+    ),
     ("스트레스 해소 방식은?",
      ["수다", "혼자 생각", "운동", "잠"],
      [{"Energy": 1, "Humor": 1}, {"Emotion": 1}, {"Action": 2}, {"Action": -1}]
-     ),
+    ),
     ("영화 볼 때 더 끌리는 쪽은?",
      ["감정선", "메시지", "비주얼", "웃음"],
      [{"Emotion": 2}, {"Fantasy": 1}, {"Fantasy": 2}, {"Humor": 2}]
-     ),
+    ),
     ("여행 스타일은?",
      ["계획형", "즉흥", "액티비티", "힐링"],
      [{"Emotion": 1}, {"Fantasy": 1}, {"Action": 2}, {"Action": -1}]
-     ),
+    ),
     ("친구들 사이에서 나는?",
      ["리더", "분위기메이커", "경청자", "자유인"],
      [{"Energy": 1}, {"Humor": 2}, {"Emotion": 2}, {"Fantasy": 1}]
-     ),
+    ),
     ("선호하는 대화 주제는?",
      ["현실", "감정", "상상", "유머"],
      [{"Emotion": -1}, {"Emotion": 2}, {"Fantasy": 2}, {"Humor": 2}]
-     ),
+    ),
     ("결정할 때 나는?",
      ["빠르게", "신중히", "감정 따라", "상황 따라"],
      [{"Action": 1}, {"Action": -1}, {"Emotion": 2}, {"Fantasy": 1}]
-     ),
+    ),
     ("좋아하는 영화 분위기",
      ["현실적", "잔잔", "화려", "엉뚱"],
      [{"Fantasy": -1}, {"Emotion": 1}, {"Fantasy": 2}, {"Humor": 2}]
-     ),
+    ),
     ("혼자 있는 시간은?",
      ["필수", "가끔", "별로", "싫음"],
      [{"Energy": -2}, {"Energy": -1}, {"Energy": 1}, {"Energy": 2}]
-     ),
+    ),
     ("웃음 코드",
      ["블랙", "잔잔", "과장", "드립"],
      [{"Humor": 1}, {"Humor": -1}, {"Humor": 2}, {"Humor": 1}]
-     ),
+    ),
 ]
 
 # =========================
 # 장르 결정 (성향 기반)
 # =========================
 def decide_genre(traits):
-    # 우선순위: Fantasy→SF/판타지, Humor→코미디, Action→액션, Emotion→로맨스, 나머지 드라마
     if traits["Fantasy"] >= 4:
-        # 상상력이 매우 강하면 SF 쪽으로
         return "SF"
     if traits["Humor"] >= 4:
         return "코미디"
@@ -102,7 +99,6 @@ def decide_genre(traits):
         return "액션"
     if traits["Emotion"] >= 4:
         return "로맨스"
-    # Fantasy가 높지만 SF까지는 아니면 판타지로
     if traits["Fantasy"] >= 2:
         return "판타지"
     return "드라마"
@@ -124,24 +120,15 @@ def draw_radar(traits):
         ]
     )
 
-    # 점수 범위(대략): -5 ~ 8 정도 나올 수 있어 안전하게 넉넉히
     fig.update_layout(
-        polar=dict(
-            radialaxis=dict(
-                visible=True,
-                range=[-6, 8]
-            )
-        ),
+        polar=dict(radialaxis=dict(visible=True, range=[-6, 8])),
         showlegend=False,
         margin=dict(l=20, r=20, t=50, b=20),
         title="🧠 나의 성향 레이더 차트"
     )
     return fig
 
-# =========================
-# 영화 추천 이유 (짧게)
-# =========================
-def movie_reason(genre, traits):
+def genre_reason(genre, traits):
     if genre == "SF":
         return "상상력/세계관 선호 성향이 강해서 SF가 잘 맞아요."
     if genre == "판타지":
@@ -171,7 +158,6 @@ st.divider()
 
 traits = init_traits()
 
-# 질문 출력
 for i, (q, options, effects) in enumerate(QUESTIONS):
     choice = st.radio(f"{i+1}. {q}", options, key=f"q_{i}")
     idx = options.index(choice)
@@ -180,7 +166,6 @@ for i, (q, options, effects) in enumerate(QUESTIONS):
 
 st.divider()
 
-# 결과 버튼
 if st.button("🎞️ 결과 보기"):
     if not tmdb_key:
         st.error("TMDB API Key를 사이드바에 입력해 주세요!")
@@ -190,7 +175,7 @@ if st.button("🎞️ 결과 보기"):
     genre_id = GENRES[genre]
 
     st.subheader(f"✨ 당신과 어울리는 장르: **{genre}**")
-    st.caption(movie_reason(genre, traits))
+    st.caption(genre_reason(genre, traits))
 
     st.plotly_chart(draw_radar(traits), use_container_width=True)
 
@@ -219,6 +204,6 @@ if st.button("🎞️ 결과 보기"):
             st.markdown(f"### {title}")
             st.write(f"⭐ 평점: {rating}")
             st.write(overview)
-            st.caption("💡 추천 이유: " + movie_reason(genre, traits))
+            st.caption("💡 추천 이유: " + genre_reason(genre, traits))
 
         st.divider()
