@@ -47,13 +47,17 @@ def load_json(path: Path, default):
 def save_json(path: Path, obj):
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
 
+def safe_slug(s: str) -> str:
+    s = (s or "").strip()
+    s = re.sub(r"[^a-zA-Z0-9._-]", "_", s)
+    return s or "guest"
+
 # =========================
 # Sidebar: User + API + Location
 # =========================
 with st.sidebar:
     st.header("👤 사용자")
-    user_id = st.text_input("사용자 ID(닉네임/이메일)", value="guest")
-    user_id = re.sub(r"[^a-zA-Z0-9._-]", "_", user_id).strip() or "guest"
+    user_id = safe_slug(st.text_input("사용자 ID(닉네임/이메일)", value="guest"))
     st.caption("ID가 다르면 옷장/피드백이 완전히 분리 저장돼요.")
 
     st.markdown("---")
@@ -184,44 +188,124 @@ def situation_hint(s):
     return mapping.get(s, "")
 
 # =========================
-# Placeholder image generator (무료, 안정적)
+# Placeholder image generator (간단 그림 포함)
 # =========================
-def make_placeholder_image(text: str, out_path: Path, size=(512, 512)):
-    img = Image.new("RGB", size, (30, 30, 30))
+def _get_font(size: int):
+    try:
+        return ImageFont.truetype("DejaVuSans.ttf", size)
+    except:
+        return ImageFont.load_default()
+
+def draw_simple_icon(draw: ImageDraw.ImageDraw, category: str, x: int, y: int, w: int, h: int):
+    """
+    category별로 아주 단순한 아이콘(티셔츠/바지/아우터/신발) 느낌만 그려줌
+    """
+    stroke = (220, 220, 220)
+    fill = (50, 50, 50)
+
+    if category == "top":
+        # 티셔츠 느낌
+        draw.rectangle([x+w*0.30, y+h*0.30, x+w*0.70, y+h*0.85], outline=stroke, width=4, fill=fill)
+        draw.polygon([(x+w*0.30, y+h*0.35), (x+w*0.18, y+h*0.48), (x+w*0.30, y+h*0.55)],
+                     outline=stroke, fill=fill)
+        draw.polygon([(x+w*0.70, y+h*0.35), (x+w*0.82, y+h*0.48), (x+w*0.70, y+h*0.55)],
+                     outline=stroke, fill=fill)
+    elif category == "bottom":
+        # 바지 느낌
+        draw.rectangle([x+w*0.35, y+h*0.30, x+w*0.65, y+h*0.85], outline=stroke, width=4, fill=fill)
+        draw.line([x+w*0.50, y+h*0.30, x+w*0.50, y+h*0.85], fill=stroke, width=3)
+        draw.rectangle([x+w*0.35, y+h*0.85, x+w*0.47, y+h*0.95], outline=stroke, width=4, fill=fill)
+        draw.rectangle([x+w*0.53, y+h*0.85, x+w*0.65, y+h*0.95], outline=stroke, width=4, fill=fill)
+    elif category == "outer":
+        # 아우터(코트) 느낌
+        draw.rectangle([x+w*0.32, y+h*0.25, x+w*0.68, y+h*0.95], outline=stroke, width=4, fill=fill)
+        draw.line([x+w*0.50, y+h*0.25, x+w*0.50, y+h*0.95], fill=stroke, width=3)
+        draw.polygon([(x+w*0.32, y+h*0.25), (x+w*0.40, y+h*0.42), (x+w*0.50, y+h*0.25)],
+                     outline=stroke, fill=fill)
+        draw.polygon([(x+w*0.68, y+h*0.25), (x+w*0.60, y+h*0.42), (x+w*0.50, y+h*0.25)],
+                     outline=stroke, fill=fill)
+    elif category == "shoes":
+        # 신발 느낌
+        draw.rounded_rectangle([x+w*0.25, y+h*0.60, x+w*0.80, y+h*0.78], radius=18,
+                               outline=stroke, width=4, fill=fill)
+        draw.rounded_rectangle([x+w*0.25, y+h*0.75, x+w*0.82, y+h*0.86], radius=18,
+                               outline=stroke, width=4, fill=fill)
+    else:
+        # generic
+        draw.rounded_rectangle([x+w*0.28, y+h*0.35, x+w*0.72, y+h*0.80], radius=26,
+                               outline=stroke, width=4, fill=fill)
+
+def make_placeholder_image(name: str, category: str, out_path: Path, size=(640, 640)):
+    """
+    name + category로 "간단한 그림" 포함된 플레이스홀더 이미지를 생성하여 파일로 저장
+    """
+    img = Image.new("RGB", size, (24, 24, 24))
     draw = ImageDraw.Draw(img)
 
-    try:
-        font = ImageFont.truetype("DejaVuSans.ttf", 28)
-        font_small = ImageFont.truetype("DejaVuSans.ttf", 18)
-    except:
-        font = ImageFont.load_default()
-        font_small = ImageFont.load_default()
+    # header bar
+    draw.rounded_rectangle([24, 18, size[0]-24, 82], radius=22, fill=(36, 36, 36))
+    font_small = _get_font(20)
+    draw.text((44, 38), f"ootd • {category}", fill=(230, 230, 230), font=font_small)
 
-    draw.text((24, 20), "ootd item", fill=(200, 200, 200), font=font_small)
+    # icon area
+    icon_box = (60, 120, size[0]-60, 420)
+    draw.rounded_rectangle(icon_box, radius=34, fill=(30, 30, 30), outline=(70, 70, 70), width=2)
+    x1, y1, x2, y2 = icon_box
+    draw_simple_icon(draw, category, x1, y1, x2-x1, y2-y1)
 
-    t = (text or "item").strip()
-    words = t.split()
+    # name text
+    font = _get_font(28)
+    name = (name or "item").strip()
+    if not name:
+        name = "item"
+
+    # wrap
+    max_chars = 18
+    words = name.split()
     lines, line = [], ""
     for w in words:
-        if len((line + " " + w).strip()) <= 18:
-            line = (line + " " + w).strip()
+        cand = (line + " " + w).strip()
+        if len(cand) <= max_chars:
+            line = cand
         else:
             if line:
                 lines.append(line)
             line = w
     if line:
         lines.append(line)
-    lines = lines[:6]
+    if not lines:
+        lines = [name[:max_chars]]
+    lines = lines[:3]
 
-    y = 120
+    y = 450
     for ln in lines:
-        draw.text((24, y), ln, fill=(240, 240, 240), font=font)
-        y += 52
+        draw.text((60, y), ln, fill=(245, 245, 245), font=font)
+        y += 46
 
-    draw.rectangle([24, size[1]-70, size[0]-24, size[1]-24], fill=(79, 127, 255))
-    draw.text((36, size[1]-58), "auto-generated placeholder", fill=(255,255,255), font=font_small)
+    # footer button-like bar
+    draw.rounded_rectangle([60, size[1]-120, size[0]-60, size[1]-58], radius=26, fill=(79, 127, 255))
+    draw.text((80, size[1]-105), "auto-generated from receipt / text", fill=(255, 255, 255), font=font_small)
 
     img.save(out_path)
+
+def make_preview_image(name: str, category: str) -> Image.Image:
+    """
+    파일 저장 없이 미리보기용 PIL Image를 반환 (영수증 미리보기에서 바로 보여주기)
+    """
+    tmp = Image.new("RGB", (480, 480), (24, 24, 24))
+    draw = ImageDraw.Draw(tmp)
+    draw.rounded_rectangle([18, 16, 480-18, 70], radius=18, fill=(36, 36, 36))
+    draw.text((32, 34), f"preview • {category}", fill=(230, 230, 230), font=_get_font(18))
+
+    icon_box = (40, 95, 480-40, 310)
+    draw.rounded_rectangle(icon_box, radius=28, fill=(30, 30, 30), outline=(70, 70, 70), width=2)
+    x1, y1, x2, y2 = icon_box
+    draw_simple_icon(draw, category, x1, y1, x2-x1, y2-y1)
+
+    # name (short)
+    nm = (name or "item").strip()[:24]
+    draw.text((40, 340), nm, fill=(245, 245, 245), font=_get_font(22))
+    return tmp
 
 # =========================
 # OpenAI: receipt image -> extract names (Vision)
@@ -515,6 +599,10 @@ with tabA:
             image = Image.open(img)
             img_path = IMG_DIR / f"{iid}.png"
             image.save(img_path)
+        else:
+            # 사진이 없으면 기본 플레이스홀더 생성(요청 반영)
+            img_path = IMG_DIR / f"{iid}.png"
+            make_placeholder_image(name if name else item_type, item_type, img_path)
 
         closet.append({
             "id": iid,
@@ -527,11 +615,11 @@ with tabA:
             "source": "manual"
         })
         save_closet(closet)
-        st.success("저장 완료!")
+        st.success("저장 완료! (사진 없으면 기본 그림으로 저장됨)")
 
 with tabB:
-    st.write("영수증 사진을 올리면 **의류/신발 품목명만 추출 + 카테고리 분류**해서 옷장에 추가할 수 있어요.")
-    st.caption("AI가 틀릴 수 있으니, 추가 전 확인/수정 후 '예'를 눌러 저장합니다. (이미지는 플레이스홀더 자동 생성)")
+    st.write("영수증 사진을 올리면 **의류/신발 품목명 추출 + 카테고리 분류** 결과를 보여줘요.")
+    st.caption("추가 전 확인/수정 후 '예'를 눌러 저장합니다. 저장 시 간단한 그림(플레이스홀더)도 자동 생성돼요.")
     receipt_img = st.file_uploader("영수증 사진 업로드", type=["jpg","png"], key="receipt_img")
 
     if st.button("영수증 분석하기(AI)", key="receipt_analyze"):
@@ -558,24 +646,31 @@ with tabB:
         edited = []
         for idx, it in enumerate(preview):
             with st.expander(f"{idx+1}. {it['name']}"):
-                col1, col2, col3 = st.columns([3,2,2])
+                colA, colB2 = st.columns([1, 2])
 
-                with col1:
-                    nm = st.text_input("상품명", value=it["name"], key=f"pv_nm_{idx}")
-                with col2:
-                    tp_list = ["unknown"] + CATEGORIES
-                    cur = it.get("type", "unknown")
-                    if cur not in tp_list:
-                        cur = "unknown"
-                    tp = st.selectbox("카테고리(수정 가능)", tp_list, index=tp_list.index(cur), key=f"pv_tp_{idx}")
-                with col3:
-                    conf = float(it.get("confidence", 0.0))
-                    st.metric("AI 신뢰도", f"{conf:.2f}")
+                # (미리보기 이미지) 파일 저장 전에도 간단 그림 보여주기
+                with colA:
+                    cat_for_preview = it.get("type") if it.get("type") in CATEGORIES else "top"
+                    st.image(make_preview_image(it["name"], cat_for_preview), use_container_width=True)
 
-                add_flag = st.checkbox("이 항목을 추가", value=(tp != "unknown"), key=f"pv_add_{idx}")
+                with colB2:
+                    col1, col2, col3 = st.columns([3,2,2])
+                    with col1:
+                        nm = st.text_input("상품명", value=it["name"], key=f"pv_nm_{idx}")
+                    with col2:
+                        tp_list = ["unknown"] + CATEGORIES
+                        cur = it.get("type", "unknown")
+                        if cur not in tp_list:
+                            cur = "unknown"
+                        tp = st.selectbox("카테고리(수정 가능)", tp_list, index=tp_list.index(cur), key=f"pv_tp_{idx}")
+                    with col3:
+                        conf = float(it.get("confidence", 0.0))
+                        st.metric("AI 신뢰도", f"{conf:.2f}")
+
+                    add_flag = st.checkbox("이 항목을 추가", value=(tp != "unknown"), key=f"pv_add_{idx}")
 
                 edited.append({
-                    "name": nm.strip() if nm else it["name"],
+                    "name": (nm.strip() if nm else it["name"])[:80],
                     "type": tp if tp in CATEGORIES else "unknown",
                     "confidence": conf,
                     "add": add_flag
@@ -598,7 +693,9 @@ with tabB:
 
                     iid = f"item_{datetime.now().timestamp()}_rc{idx}"
                     img_path = IMG_DIR / f"{iid}.png"
-                    make_placeholder_image(it["name"], img_path)
+
+                    # ✅ 저장 시 "간단 그림 포함" 플레이스홀더 이미지 자동 생성
+                    make_placeholder_image(it["name"], it["type"], img_path)
 
                     closet.append({
                         "id": iid,
@@ -613,13 +710,15 @@ with tabB:
                     added += 1
 
                 save_closet(closet)
-                st.success(f"총 {added}개 항목을 옷장에 추가했어! ✅")
+                st.success(f"총 {added}개 항목을 옷장에 추가했어! ✅ (이미지 자동 생성됨)")
                 st.session_state.pop("receipt_preview", None)
+                st.rerun()
 
         with col_no:
             if st.button("❌ 아니오, 취소", key="receipt_confirm_no"):
                 st.info("취소했어. 필요하면 다시 분석해줘.")
                 st.session_state.pop("receipt_preview", None)
+                st.rerun()
 
 with tabC:
     st.markdown("### 🧾 구매내역 텍스트/CSV로 대량 추가")
@@ -660,16 +759,21 @@ JSON만:
             edited = []
             for idx, it in enumerate(preview):
                 with st.expander(f"{idx+1}. {it['name']}"):
-                    nm = st.text_input("상품명", value=it["name"], key=f"tp_nm_{idx}")
-                    tp_list = ["unknown"] + CATEGORIES
-                    cur = it.get("type","unknown")
-                    if cur not in tp_list:
-                        cur = "unknown"
-                    tp = st.selectbox("카테고리", tp_list, index=tp_list.index(cur), key=f"tp_tp_{idx}")
-                    conf = float(it.get("confidence", 0.0))
-                    st.caption(f"AI 신뢰도: {conf:.2f}")
-                    add_flag = st.checkbox("추가", value=(tp != "unknown"), key=f"tp_add_{idx}")
-                    edited.append({"name": nm.strip(), "type": tp, "add": add_flag})
+                    colA, colB2 = st.columns([1,2])
+                    with colA:
+                        cat_for_preview = it.get("type") if it.get("type") in CATEGORIES else "top"
+                        st.image(make_preview_image(it["name"], cat_for_preview), use_container_width=True)
+                    with colB2:
+                        nm = st.text_input("상품명", value=it["name"], key=f"tp_nm_{idx}")
+                        tp_list = ["unknown"] + CATEGORIES
+                        cur = it.get("type","unknown")
+                        if cur not in tp_list:
+                            cur = "unknown"
+                        tp = st.selectbox("카테고리", tp_list, index=tp_list.index(cur), key=f"tp_tp_{idx}")
+                        conf = float(it.get("confidence", 0.0))
+                        st.caption(f"AI 신뢰도: {conf:.2f}")
+                        add_flag = st.checkbox("추가", value=(tp != "unknown"), key=f"tp_add_{idx}")
+                    edited.append({"name": nm.strip()[:80], "type": tp, "add": add_flag})
 
             if st.button("✅ 선택 항목을 옷장에 추가"):
                 closet = load_closet()
@@ -679,9 +783,11 @@ JSON만:
                         continue
                     if it["type"] == "unknown":
                         continue
+
                     iid = f"item_{datetime.now().timestamp()}_t{idx}"
                     img_path = IMG_DIR / f"{iid}.png"
-                    make_placeholder_image(it["name"], img_path)
+                    make_placeholder_image(it["name"], it["type"], img_path)
+
                     closet.append({
                         "id": iid, "type": it["type"], "name": it["name"],
                         "primary_style": None, "secondary_style": None,
@@ -691,8 +797,9 @@ JSON만:
                     })
                     added += 1
                 save_closet(closet)
-                st.success(f"{added}개 추가 완료!")
+                st.success(f"{added}개 추가 완료! (이미지 자동 생성)")
                 st.session_state.pop("text_preview", None)
+                st.rerun()
 
     with sub2:
         st.write("CSV 컬럼: type,name,primary_style,secondary_style (style은 선택)")
@@ -717,7 +824,7 @@ JSON만:
 
                 iid = f"item_{datetime.now().timestamp()}_c{added}"
                 img_path = IMG_DIR / f"{iid}.png"
-                make_placeholder_image(nm, img_path)
+                make_placeholder_image(nm, tp, img_path)
 
                 closet.append({
                     "id": iid, "type": tp, "name": nm,
@@ -728,29 +835,75 @@ JSON만:
                 })
                 added += 1
             save_closet(closet)
-            st.success(f"{added}개 추가 완료!")
+            st.success(f"{added}개 추가 완료! (이미지 자동 생성)")
+            st.rerun()
 
 st.markdown("---")
 
 # =========================
-# 2) Closet view
+# 2) Closet view + Delete confirmation
 # =========================
 st.markdown("## 2) 👕 내 옷장")
 closet = load_closet()
+
+# 삭제 확인 상태
+if "pending_delete_id" not in st.session_state:
+    st.session_state["pending_delete_id"] = None
+
 if not closet:
     st.info("아직 옷이 없어. 위에서 등록해줘!")
 else:
     cols = st.columns(4)
     for i, item in enumerate(closet):
         with cols[i % 4]:
+            st.markdown("<div class='smallcard'>", unsafe_allow_html=True)
+
             if item.get("image"):
                 st.image(item["image"], use_container_width=True)
             else:
-                st.markdown("<div class='smallcard'>📦 이미지 없음</div>", unsafe_allow_html=True)
+                st.write("📦 이미지 없음")
+
             ps = item.get("primary_style") or "-"
             ss = item.get("secondary_style") or "-"
-            st.caption(f"{item['type']} | 주:{ps} / 보조:{ss}")
-            st.caption(item["name"])
+            st.caption(f"{item.get('type','-')} | 주:{ps} / 보조:{ss}")
+            st.caption(item.get("name", ""))
+
+            item_id = item.get("id")
+            is_pending = (st.session_state["pending_delete_id"] == item_id)
+
+            if not is_pending:
+                if st.button("🗑️ 삭제", key=f"del_{item_id}"):
+                    st.session_state["pending_delete_id"] = item_id
+                    st.rerun()
+            else:
+                st.warning("정말 삭제할까?")
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("✅ 예", key=f"del_yes_{item_id}"):
+                        # 이미지 파일 삭제
+                        img_path = item.get("image")
+                        if img_path:
+                            try:
+                                p = Path(img_path)
+                                if p.exists():
+                                    p.unlink()
+                            except:
+                                pass
+
+                        # closet.json에서 제거
+                        new_closet = [x for x in closet if x.get("id") != item_id]
+                        save_closet(new_closet)
+
+                        st.session_state["pending_delete_id"] = None
+                        st.success("삭제 완료!")
+                        st.rerun()
+                with c2:
+                    if st.button("❌ 아니오", key=f"del_no_{item_id}"):
+                        st.session_state["pending_delete_id"] = None
+                        st.info("취소했어.")
+                        st.rerun()
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
 st.markdown("---")
 
@@ -778,15 +931,18 @@ if use_openai and client:
             st.write(guidance.get("notes", ""))
             st.write("선호 키워드:", guidance.get("prefer_keywords", []))
             st.write("회피 키워드:", guidance.get("avoid_keywords", []))
+        else:
+            st.info("생성 버튼을 누르면 상황 기반 선호/회피 키워드를 만들어줘요.")
 
 if st.button("OOTD 추천"):
-    if not closet:
+    closet_now = load_closet()
+    if not closet_now:
         st.error("옷장이 비어있어. 먼저 옷을 등록해줘!")
         st.stop()
 
     guidance = st.session_state.get("guidance", None) if (use_openai and client) else None
     outfit, reasons, meta = recommend(
-        closet=closet, weather=weather, situation=situation,
+        closet=closet_now, weather=weather, situation=situation,
         temp_bias=temp_bias, guidance=guidance, user_style_primary=user_style_primary
     )
 
@@ -805,7 +961,7 @@ if st.button("OOTD 추천"):
             st.image(v["image"], width=180)
         else:
             st.write("📦 이미지 없음")
-        st.markdown(f"**{k.upper()} | {v['name']}**")
+        st.markdown(f"**{k.upper()} | {v.get('name','')}**")
         ps = v.get("primary_style") or "-"
         ss = v.get("secondary_style") or "-"
         st.caption(f"태그(선택): 주:{ps} / 보조:{ss}")
@@ -859,6 +1015,7 @@ else:
 
         st.success(f"피드백 저장 완료! 다음 추천부터 보정값이 {bias:+.1f}°C로 반영돼.")
         st.session_state.pop("last_outfit", None)
+        st.rerun()
 
 st.markdown("---")
 
