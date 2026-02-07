@@ -36,31 +36,56 @@ hr { border: none; border-top: 1px solid #2A2A2A; margin: 14px 0; }
 """, unsafe_allow_html=True)
 
 # =========================
-# Data
+# Helpers: JSON storage
 # =========================
-DATA = Path("data")
-IMG = DATA / "images"
-CLOSET = DATA / "closet.json"
-FEEDBACK = DATA / "feedback.json"
-PROFILE = DATA / "profile.json"
-
-DATA.mkdir(exist_ok=True)
-IMG.mkdir(exist_ok=True)
-if not CLOSET.exists():
-    CLOSET.write_text("[]", encoding="utf-8")
-if not FEEDBACK.exists():
-    FEEDBACK.write_text("[]", encoding="utf-8")
-if not PROFILE.exists():
-    PROFILE.write_text(json.dumps({"temp_bias": 0.0}, ensure_ascii=False, indent=2), encoding="utf-8")
-
-def load_json(path, default):
+def load_json(path: Path, default):
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except:
         return default
 
-def save_json(path, obj):
+def save_json(path: Path, obj):
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+# =========================
+# Sidebar: User + API + Location
+# =========================
+with st.sidebar:
+    st.header("👤 사용자")
+    user_id = st.text_input("사용자 ID(닉네임/이메일)", value="guest")
+    user_id = re.sub(r"[^a-zA-Z0-9._-]", "_", user_id).strip() or "guest"
+    st.caption("다른 ID를 입력하면 옷장/피드백이 완전히 분리 저장돼요.")
+
+    st.markdown("---")
+    st.header("🔑 API 설정")
+    openai_key = st.text_input("OpenAI API Key", type="password", value=os.environ.get("OPENAI_API_KEY", ""))
+    use_openai = st.toggle("OpenAI 기능 사용(상황기반 추천/설명)", value=bool(openai_key))
+    if openai_key:
+        os.environ["OPENAI_API_KEY"] = openai_key
+
+    st.markdown("---")
+    st.header("📍 위치/날씨")
+    lat = st.number_input("위도(lat)", value=37.5665, format="%.6f")
+    lon = st.number_input("경도(lon)", value=126.9780, format="%.6f")
+    st.caption("팁: 휴대폰 GPS 값을 입력하면 더 정확해요.")
+
+# =========================
+# User-scoped Data Paths (요구사항 1번)
+# =========================
+BASE = Path("data") / "users" / user_id
+IMG_DIR = BASE / "images"
+CLOSET = BASE / "closet.json"
+FEEDBACK = BASE / "feedback.json"
+PROFILE = BASE / "profile.json"
+
+BASE.mkdir(parents=True, exist_ok=True)
+IMG_DIR.mkdir(parents=True, exist_ok=True)
+if not CLOSET.exists():
+    CLOSET.write_text("[]", encoding="utf-8")
+if not FEEDBACK.exists():
+    FEEDBACK.write_text("[]", encoding="utf-8")
+if not PROFILE.exists():
+    PROFILE.write_text(json.dumps({"temp_bias": 0.0, "situation_pref": {}}, ensure_ascii=False, indent=2), encoding="utf-8")
 
 def load_closet():
     return load_json(CLOSET, [])
@@ -75,29 +100,14 @@ def save_feedback(fb):
     save_json(FEEDBACK, fb)
 
 def load_profile():
-    return load_json(PROFILE, {"temp_bias": 0.0})
+    return load_json(PROFILE, {"temp_bias": 0.0, "situation_pref": {}})
 
 def save_profile(p):
     save_json(PROFILE, p)
 
 # =========================
-# Sidebar: API Key & Settings
+# Optional OpenAI client
 # =========================
-with st.sidebar:
-    st.header("🔑 API 설정")
-    openai_key = st.text_input("OpenAI API Key", type="password", value=os.environ.get("OPENAI_API_KEY", ""))
-    use_openai = st.toggle("OpenAI 기능 사용(스타일/설명/텍스트추출)", value=bool(openai_key))
-    if openai_key:
-        os.environ["OPENAI_API_KEY"] = openai_key
-
-    st.markdown("---")
-    st.header("📍 위치/날씨")
-    # 기본값: 서울
-    lat = st.number_input("위도(lat)", value=37.5665, format="%.6f")
-    lon = st.number_input("경도(lon)", value=126.9780, format="%.6f")
-    st.caption("팁: 휴대폰 GPS 값을 입력하면 더 정확해요.")
-
-# OpenAI client (옵션)
 client = None
 if use_openai and openai_key:
     try:
@@ -107,14 +117,9 @@ if use_openai and openai_key:
         client = None
 
 # =========================
-# Free APIs
-# 1) Open-Meteo weather (free)
-# 2) Nominatim reverse geocoding (free, keyless)
+# Free APIs: Weather + Reverse geocode
 # =========================
 def reverse_geocode(lat, lon):
-    """
-    Nominatim (OpenStreetMap) - free keyless reverse geocoding
-    """
     try:
         url = "https://nominatim.openstreetmap.org/reverse"
         params = {"format": "jsonv2", "lat": lat, "lon": lon}
@@ -127,9 +132,6 @@ def reverse_geocode(lat, lon):
         return ""
 
 def get_weather(lat, lon):
-    """
-    Open-Meteo current weather (free)
-    """
     url = "https://api.open-meteo.com/v1/forecast"
     params = {
         "latitude": lat,
@@ -137,119 +139,92 @@ def get_weather(lat, lon):
         "current_weather": "true",
         "timezone": "auto"
     }
-    w = requests.get(url, params=params, timeout=10).json().get("current_weather", {})
-    # 예: temperature, windspeed, weathercode
+    data = requests.get(url, params=params, timeout=10).json()
+    w = data.get("current_weather", {}) or {}
     return {
         "temperature": w.get("temperature"),
         "windspeed": w.get("windspeed"),
         "weathercode": w.get("weathercode"),
-        "time": w.get("time")
+        "time": w.get("time"),
     }
 
 # =========================
-# Style (Rule + OpenAI)
-# 주 스타일 1개 + 보조 스타일 0~1개
+# Closet item schema
+# - style is OPTIONAL now (can be empty)
 # =========================
-STYLES = ["casual", "dandy", "hiphop", "sporty"]
+CATEGORIES = ["top", "bottom", "outer", "shoes"]
+STYLES = ["casual", "dandy", "hiphop", "sporty"]  # optional field
 
-STYLE_KEYWORDS = {
-    "dandy": ["셔츠", "슬랙", "코트", "로퍼", "자켓", "블레이저"],
-    "casual": ["후드", "맨투맨", "티", "청바지", "가디건"],
-    "hiphop": ["오버", "조거", "트랙", "볼캡", "와이드"],
-    "sporty": ["운동", "트레이닝", "러닝", "스니커", "져지"]
-}
+# =========================
+# Situations (핵심: 사용자들이 더 잘 고를 수 있는 선택지)
+# =========================
+SITUATIONS = [
+    "학교/수업(무난 & 편함)",
+    "데이트(호감/깔끔)",
+    "친구 약속(꾸안꾸)",
+    "소개팅/첫만남(호감/단정)",
+    "면접/발표/중요한 날(힘줘야 함)",
+    "동아리/모임/회식(적당히 갖춘)",
+    "출근/미팅(단정/실용)",
+    "여행/나들이(활동/사진)",
+    "운동/러닝(스포티)",
+    "집콕/근처 마실(편안)",
+    "결혼식/격식(포멀)",
+    "장례식/예의(차분)",
+]
 
-def suggest_styles_rule(name):
-    found = []
-    for style, words in STYLE_KEYWORDS.items():
-        for w in words:
-            if w.lower() in name.lower():
-                found.append(style)
-                break
-    found = list(dict.fromkeys(found))  # preserve order, unique
-    if not found:
-        return ("casual", None)
-    primary = found[0]
-    secondary = found[1] if len(found) > 1 else None
-    return (primary, secondary)
+def situation_hint(situation: str) -> str:
+    """간단한 힌트(LLM 없이도 UX)"""
+    mapping = {
+        "학교/수업(무난 & 편함)": "편안하지만 깔끔. 너무 과한 포인트는 X",
+        "데이트(호감/깔끔)": "깔끔+포인트 1개. 실루엣 정돈",
+        "친구 약속(꾸안꾸)": "편안하지만 센스 있게. 베이직 + 포인트",
+        "소개팅/첫만남(호감/단정)": "단정·깔끔·과하지 않게",
+        "면접/발표/중요한 날(힘줘야 함)": "정돈된 느낌/신뢰감. 포멀 쪽",
+        "동아리/모임/회식(적당히 갖춘)": "캐주얼+단정 중간. 무난한 신발",
+        "출근/미팅(단정/실용)": "실용 + 단정. 과한 로고는 X",
+        "여행/나들이(활동/사진)": "활동성 + 사진발. 레이어드/색 조합",
+        "운동/러닝(스포티)": "기능성·움직임·땀 고려",
+        "집콕/근처 마실(편안)": "편안 최우선 + 최소한의 깔끔",
+        "결혼식/격식(포멀)": "격식. 어두운 톤/단정한 신발",
+        "장례식/예의(차분)": "무채색·단정·튀지 않게",
+    }
+    return mapping.get(situation, "")
 
-def suggest_styles_openai(name):
+# =========================
+# OpenAI: Situation-based guidance (optional)
+# - Generates weighting rules for recommendation.
+# =========================
+def build_guidance_with_openai(weather, situation, closet_summary):
     """
-    Return: (primary, secondary)
-    JSON format expected: {"primary":"dandy","secondary":"casual"}  (secondary can be null)
+    Returns dict of weights/preferences
+    Example JSON:
+    {
+      "prefer": ["outer","shoes_clean","simple_color"],
+      "avoid": ["flashy_logo"],
+      "tone": "clean",
+      "extra_note": "..."
+    }
     """
-    if not client or not name.strip():
-        return ("casual", None)
+    if not client:
+        return None
 
     prompt = f"""
-너는 패션 스타일 태깅 도우미야.
-아래 의류 이름을 보고 스타일을 추천해줘.
-스타일은 반드시 다음 4개 중에서만 선택: {STYLES}
+너는 '오늘 상황' 기반 코디 추천 룰을 만드는 도우미야.
+아래 정보로 오늘 추천에 반영할 가이드(선호/회피/톤)를 만들어줘.
+반환은 JSON만.
 
-규칙:
-- primary(주 스타일) 1개는 필수
-- secondary(보조 스타일) 0~1개 (없으면 null)
-- 결과는 JSON만 반환
+- 날씨: {weather}
+- 오늘 상황: {situation}
+- 옷장 요약(카테고리/이름만): {closet_summary}
 
-의류 이름: {name}
-""".strip()
-
-    try:
-        resp = client.responses.create(
-            model="gpt-4.1-mini",
-            input=prompt,
-        )
-        text = resp.output_text
-        m = re.search(r"\{.*\}", text, re.DOTALL)
-        if not m:
-            return ("casual", None)
-        data = json.loads(m.group(0))
-        primary = data.get("primary", "casual")
-        secondary = data.get("secondary", None)
-        if primary not in STYLES:
-            primary = "casual"
-        if secondary not in STYLES:
-            secondary = None
-        if secondary == primary:
-            secondary = None
-        return (primary, secondary)
-    except:
-        return ("casual", None)
-
-# =========================
-# Bulk import options (no vendor API)
-# - CSV upload (type,name,primary_style,secondary_style)
-# - Paste order history text -> extract items via OpenAI (optional)
-# =========================
-def parse_csv_bytes(file_bytes):
-    text = file_bytes.decode("utf-8", errors="ignore").splitlines()
-    reader = csv.DictReader(text)
-    items = []
-    for row in reader:
-        items.append({
-            "type": (row.get("type") or "").strip(),
-            "name": (row.get("name") or "").strip(),
-            "primary_style": (row.get("primary_style") or "").strip(),
-            "secondary_style": (row.get("secondary_style") or "").strip(),
-        })
-    return items
-
-def extract_items_from_text_with_openai(order_text):
-    """
-    User pastes order/purchase text -> OpenAI extracts clothing items.
-    Return list of dict: {name, type(optional)}
-    """
-    if not client or not order_text.strip():
-        return []
-
-    prompt = f"""
-너는 구매내역 텍스트에서 '의류/신발' 상품명만 추출하는 도우미야.
-아래 텍스트에서 옷/신발로 보이는 항목을 최대 20개까지 뽑아줘.
-가능하면 type도 추정해줘: top/bottom/outer/shoes 중 하나. 모르면 null.
-반환은 JSON만: {{"items":[{{"name":"...","type":"top"}}, ...]}}.
-
-텍스트:
-{order_text}
+JSON 스키마:
+{{
+  "tone": "clean|comfy|sporty|formal|street|minimal",
+  "prefer_keywords": ["...","..."],   // 옷 이름에 포함되면 가산할 키워드
+  "avoid_keywords": ["...","..."],    // 옷 이름에 포함되면 감점할 키워드
+  "notes": "한 줄 조언"
+}}
 """.strip()
 
     try:
@@ -257,107 +232,37 @@ def extract_items_from_text_with_openai(order_text):
         text = resp.output_text
         m = re.search(r"\{.*\}", text, re.DOTALL)
         if not m:
-            return []
+            return None
         data = json.loads(m.group(0))
-        items = data.get("items", [])
-        clean = []
-        for it in items:
-            nm = (it.get("name") or "").strip()
-            tp = it.get("type")
-            if tp not in ["top","bottom","outer","shoes"]:
-                tp = None
-            if nm:
-                clean.append({"name": nm, "type": tp})
-        return clean[:20]
+        # sanitize
+        tone = data.get("tone", "clean")
+        if tone not in ["clean","comfy","sporty","formal","street","minimal"]:
+            tone = "clean"
+        pk = data.get("prefer_keywords", [])
+        ak = data.get("avoid_keywords", [])
+        pk = [str(x)[:30] for x in pk][:8] if isinstance(pk, list) else []
+        ak = [str(x)[:30] for x in ak][:8] if isinstance(ak, list) else []
+        notes = str(data.get("notes",""))[:120]
+        return {"tone": tone, "prefer_keywords": pk, "avoid_keywords": ak, "notes": notes}
     except:
-        return []
+        return None
 
-# =========================
-# Recommendation Engine + Personal temperature bias from feedback
-# =========================
-def temperature_bucket(temp):
-    if temp is None:
-        return "unknown"
-    if temp < 5:
-        return "very_cold"
-    if temp < 12:
-        return "cold"
-    if temp < 20:
-        return "mild"
-    if temp < 26:
-        return "warm"
-    return "hot"
-
-def recommend(closet, temp, today_primary, today_secondary, temp_bias=0.0):
-    """
-    temp_bias: user warmth preference adjustment (- colder, + warmer)
-    We'll adjust effective temp: temp + temp_bias
-    """
-    effective_temp = None if temp is None else (temp + temp_bias)
-
-    scores, reasons = {}, {}
-
-    for item in closet:
-        s, r = 0, []
-
-        # weather: outer preference
-        if effective_temp is not None and effective_temp < 10 and item["type"] == "outer":
-            s += 3; r.append("기온 낮음 → 아우터 가산(개인보정 반영)")
-        if effective_temp is not None and effective_temp >= 22 and item["type"] == "outer":
-            s -= 2; r.append("기온 높음 → 아우터 감점(개인보정 반영)")
-
-        # style scoring: primary strong, secondary mild
-        item_primary = item.get("primary_style")
-        item_secondary = item.get("secondary_style")
-
-        if item_primary == today_primary:
-            s += 4; r.append(f"주 스타일({today_primary}) 일치")
-        elif today_secondary and item_primary == today_secondary:
-            s += 2; r.append(f"보조 스타일({today_secondary}) 일치")
-        else:
-            s -= 1; r.append("스타일 일치도 낮음")
-
-        # if secondary matches too, small bonus
-        if today_secondary and (item_secondary == today_secondary or item_secondary == today_primary):
-            s += 1; r.append("보조 스타일 매칭 보너스")
-
-        scores[item["id"]] = s
-        reasons[item["id"]] = r
-
-    outfit = {}
-    for t in ["top","bottom","outer","shoes"]:
-        items = [i for i in closet if i["type"] == t]
-        if items:
-            outfit[t] = max(items, key=lambda x: scores[x["id"]])
-
-    meta = {
-        "effective_temp": effective_temp,
-        "temp_bias": temp_bias,
-        "bucket": temperature_bucket(effective_temp),
-    }
-    return outfit, reasons, meta
-
-# =========================
-# AI Explanation (optional)
-# =========================
-def explain_outfit_ai(weather, today_primary, today_secondary, outfit, reasons, meta):
+def explain_outfit_ai(weather, situation, outfit, reasons, meta, guidance):
     if not client:
         return None
     prompt = f"""
-OOTD 앱 추천 결과를 사용자가 납득하기 쉽게 3줄로 설명해줘.
-톤: 짧고 친근한 인스타 느낌.
-주 스타일/보조 스타일을 반영했다고 말해줘.
+OOTD 앱 추천 결과를 3줄로 설명해줘. 인스타 느낌으로 짧고 친근하게.
+오늘 '상황'을 중심으로 왜 이 조합인지 말해줘.
 
 - 날씨: {weather}
-- 주 스타일: {today_primary}
-- 보조 스타일: {today_secondary}
+- 상황: {situation}
 - 추천 코디: { {k:v['name'] for k,v in outfit.items()} }
-- 규칙 기반 근거: {reasons}
-- 개인 보정(추움/더움 피드백 기반): {meta}
+- 규칙 기반 이유: {reasons}
+- 개인 보정(추움/더움 피드백): {meta}
+- 상황 가이드: {guidance}
 
 3줄 텍스트만 반환.
 """.strip()
-
     try:
         resp = client.responses.create(model="gpt-4.1-mini", input=prompt)
         return resp.output_text.strip()
@@ -365,163 +270,168 @@ OOTD 앱 추천 결과를 사용자가 납득하기 쉽게 3줄로 설명해줘.
         return None
 
 # =========================
-# UI
+# Recommendation Engine
+# - style is optional (not required)
+# - situation is primary driver
+# - feedback temp_bias adjusts warmth preference
+# - guidance keywords optionally from OpenAI
+# =========================
+def recommend(closet, weather, situation, temp_bias=0.0, guidance=None, user_style_primary=None):
+    """
+    guidance: dict from OpenAI (tone, prefer_keywords, avoid_keywords)
+    user_style_primary: optional style chosen by user (not required)
+    """
+    temp = weather.get("temperature")
+    effective_temp = None if temp is None else (temp + temp_bias)
+
+    prefer_keywords = (guidance or {}).get("prefer_keywords", [])
+    avoid_keywords = (guidance or {}).get("avoid_keywords", [])
+
+    scores, reasons = {}, {}
+
+    # situation heuristics (no-AI baseline)
+    sit = situation
+    wants_formal = any(x in sit for x in ["면접", "발표", "중요", "출근", "미팅", "결혼식", "장례식"])
+    wants_comfy = any(x in sit for x in ["집콕", "학교", "꾸안꾸", "근처", "수업"])
+    wants_sporty = "운동" in sit or "러닝" in sit
+    wants_date = "데이트" in sit or "소개팅" in sit or "첫만남" in sit
+
+    for item in closet:
+        s = 0
+        r = []
+
+        name = item.get("name", "")
+        tp = item.get("type")
+
+        # Weather warmth logic
+        if effective_temp is not None:
+            if effective_temp < 10 and tp == "outer":
+                s += 4; r.append("기온 낮음 → 아우터 추천(개인보정 포함)")
+            if effective_temp >= 22 and tp == "outer":
+                s -= 3; r.append("기온 높음 → 아우터 감점(개인보정 포함)")
+
+        # Situation baseline scoring
+        if wants_sporty:
+            # sporty: sneakers/training keywords bonus
+            if tp == "shoes":
+                s += 2; r.append("운동/러닝 → 신발 중요")
+            if any(k in name for k in ["운동", "트레이닝", "러닝", "조거", "스니커", "레깅스"]):
+                s += 3; r.append("운동 관련 키워드 매칭")
+        if wants_formal:
+            if any(k in name for k in ["셔츠", "슬랙", "코트", "자켓", "블레이저", "로퍼"]):
+                s += 3; r.append("격식/단정 키워드 매칭")
+            if any(k in name for k in ["후드", "트랙", "조거", "볼캡"]):
+                s -= 2; r.append("격식 상황엔 캐주얼 요소 감점")
+        if wants_date:
+            if any(k in name for k in ["셔츠", "니트", "코트", "자켓", "로퍼", "가디건"]):
+                s += 2; r.append("데이트/첫만남 → 깔끔한 아이템 가산")
+        if wants_comfy:
+            if any(k in name for k in ["후드", "맨투맨", "티", "청바지", "가디건", "스니커"]):
+                s += 2; r.append("편한 상황 → 캐주얼 아이템 가산")
+
+        # Optional user style (not required)
+        if user_style_primary:
+            if item.get("primary_style") == user_style_primary or item.get("secondary_style") == user_style_primary:
+                s += 1; r.append("선택한 스타일과 일부 일치(선택사항)")
+
+        # OpenAI guidance keywords
+        for kw in prefer_keywords:
+            if kw and kw in name:
+                s += 2; r.append(f"AI 가이드 선호 키워드: {kw}")
+        for kw in avoid_keywords:
+            if kw and kw in name:
+                s -= 2; r.append(f"AI 가이드 회피 키워드: {kw}")
+
+        scores[item["id"]] = s
+        reasons[item["id"]] = r if r else ["기본 점수 계산"]
+
+    # pick best per category
+    outfit = {}
+    for cat in ["top", "bottom", "outer", "shoes"]:
+        candidates = [i for i in closet if i.get("type") == cat]
+        if candidates:
+            outfit[cat] = max(candidates, key=lambda x: scores.get(x["id"], 0))
+
+    meta = {"temp_bias": temp_bias, "effective_temp": effective_temp}
+    return outfit, reasons, meta
+
+# =========================
+# UI Header: weather/location
 # =========================
 st.title("🧥 ootd")
 
-# Header: location + weather
 loc_name = reverse_geocode(lat, lon)
 weather = get_weather(lat, lon)
-with st.container():
-    st.markdown("<div class='smallcard'>", unsafe_allow_html=True)
-    st.write("📍 위치:", loc_name if loc_name else f"{lat:.4f}, {lon:.4f}")
-    st.write("🌦️ 현재 날씨:", f"{weather.get('temperature')}°C", f"💨 바람 {weather.get('windspeed')}km/h")
-    st.caption(f"시간: {weather.get('time')}")
-    st.markdown("</div>", unsafe_allow_html=True)
+
+st.markdown("<div class='smallcard'>", unsafe_allow_html=True)
+st.write("👤 사용자:", user_id)
+st.write("📍 위치:", loc_name if loc_name else f"{lat:.4f}, {lon:.4f}")
+st.write("🌦️ 현재:", f"{weather.get('temperature')}°C", f"💨 바람 {weather.get('windspeed')}km/h")
+st.caption(f"시간: {weather.get('time')}")
+st.markdown("</div>", unsafe_allow_html=True)
 
 profile = load_profile()
+temp_bias = float(profile.get("temp_bias", 0.0))
 
-# -------- 1) Closet register --------
-st.markdown("## 1) 📸 옷장 등록 (사진/간단 입력)")
-img = st.file_uploader("사진 업로드(선택)", type=["jpg","png"])
-item_type = st.selectbox("카테고리", ["top","bottom","outer","shoes"])
-name = st.text_input("이름(권장)", placeholder="예: 검정 셔츠, 슬랙스, 조거 팬츠")
+# =========================
+# 1) Closet register
+# =========================
+st.markdown("## 1) 📸 옷장 등록 (사진 선택 / 최소 입력)")
+colA, colB = st.columns([1, 1])
 
-# AI suggested style (primary + secondary)
-primary, secondary = ("casual", None)
-if name:
-    if use_openai and client:
-        primary, secondary = suggest_styles_openai(name)
-        st.caption(f"🤖 AI 추천: 주 스타일={primary} / 보조 스타일={secondary if secondary else '없음'}")
-    else:
-        primary, secondary = suggest_styles_rule(name)
-        st.caption(f"🧠 규칙 추천: 주 스타일={primary} / 보조 스타일={secondary if secondary else '없음'}")
+with colA:
+    img = st.file_uploader("사진 업로드(선택)", type=["jpg", "png"])
+    item_type = st.selectbox("카테고리", CATEGORIES)
+    name = st.text_input("아이템 이름(권장)", placeholder="예: 검정 셔츠, 슬랙스, 조거 팬츠")
 
-col1, col2 = st.columns(2)
-with col1:
-    primary_style = st.selectbox("주 스타일(1개)", STYLES, index=STYLES.index(primary) if primary in STYLES else 0)
-with col2:
-    secondary_options = ["없음"] + STYLES
-    default_sec = "없음" if not secondary else secondary
-    secondary_style_pick = st.selectbox("보조 스타일(0~1개)", secondary_options, index=secondary_options.index(default_sec))
-
-secondary_style = None if secondary_style_pick == "없음" else secondary_style_pick
-if secondary_style == primary_style:
+with colB:
+    st.markdown("### 🎯 스타일 태그(선택 사항)")
+    st.caption("모르면 안 해도 돼요. 상황 기반 추천이 메인입니다.")
+    style_use = st.toggle("스타일 태그 입력(선택)", value=False)
+    primary_style = None
     secondary_style = None
-    st.info("보조 스타일이 주 스타일과 같아서 '없음'으로 처리했어.")
+
+    if style_use:
+        primary_style = st.selectbox("주 스타일(선택)", ["선택안함"] + STYLES, index=0)
+        secondary_style_pick = st.selectbox("보조 스타일(선택)", ["없음"] + STYLES, index=0)
+        if primary_style == "선택안함":
+            primary_style = None
+        secondary_style = None if secondary_style_pick == "없음" else secondary_style_pick
+        if primary_style and secondary_style == primary_style:
+            secondary_style = None
+            st.info("보조 스타일이 주 스타일과 같아서 '없음' 처리했어.")
 
 if st.button("옷장에 저장"):
     closet = load_closet()
-
     iid = f"item_{datetime.now().timestamp()}"
     img_path = None
 
     if img:
         image = Image.open(img)
-        img_path = IMG / f"{iid}.png"
+        img_path = IMG_DIR / f"{iid}.png"
         image.save(img_path)
 
     closet.append({
         "id": iid,
         "type": item_type,
         "name": name if name else item_type,
-        "primary_style": primary_style,
-        "secondary_style": secondary_style,
+        "primary_style": primary_style,      # can be None
+        "secondary_style": secondary_style,  # can be None
         "image": str(img_path) if img_path else None,
         "created_at": datetime.now().isoformat()
     })
     save_closet(closet)
-    st.success("옷 저장 완료! (사진은 선택 사항)")
+    st.success("저장 완료! (스타일/사진은 선택 사항)")
 
 st.markdown("---")
 
-# -------- 1-2) Bulk import --------
-st.markdown("## 1-2) 🧾 대량 등록 (CSV / 구매내역 텍스트)")
-st.caption("패션 앱(무신사 등) 직접 연동은 보통 공식 API/권한이 없어 MVP에서 어렵고, 대신 CSV/텍스트 방식으로 현실적으로 확장합니다.")
-
-tab1, tab2 = st.tabs(["CSV 업로드", "구매내역 텍스트 붙여넣기(OpenAI)"])
-
-with tab1:
-    st.write("CSV 컬럼 예시: `type,name,primary_style,secondary_style`")
-    csv_file = st.file_uploader("CSV 업로드", type=["csv"])
-    if csv_file and st.button("CSV로 옷장 추가"):
-        rows = parse_csv_bytes(csv_file.getvalue())
-        closet = load_closet()
-        added = 0
-        for r in rows:
-            tp = r["type"]
-            nm = r["name"]
-            ps = r["primary_style"] if r["primary_style"] in STYLES else "casual"
-            ss = r["secondary_style"] if r["secondary_style"] in STYLES else None
-            if tp in ["top","bottom","outer","shoes"] and nm:
-                iid = f"item_{datetime.now().timestamp()}_{added}"
-                closet.append({
-                    "id": iid,
-                    "type": tp,
-                    "name": nm,
-                    "primary_style": ps,
-                    "secondary_style": ss if ss != ps else None,
-                    "image": None,
-                    "created_at": datetime.now().isoformat()
-                })
-                added += 1
-        save_closet(closet)
-        st.success(f"CSV로 {added}개 아이템을 추가했어!")
-
-with tab2:
-    st.write("예: 주문내역 텍스트(상품명/옵션 포함)를 통째로 붙여넣기")
-    order_text = st.text_area("구매내역 텍스트", height=160, placeholder="주문내역을 복사해서 붙여넣어줘.")
-    if st.button("텍스트에서 아이템 추출"):
-        if not (use_openai and client):
-            st.error("이 기능은 OpenAI API Key가 필요해. 사이드바에서 입력하고 토글 켜줘.")
-        else:
-            items = extract_items_from_text_with_openai(order_text)
-            if not items:
-                st.warning("추출 결과가 없었어. 텍스트에 상품명이 포함되어 있는지 확인해줘.")
-            else:
-                st.session_state["extracted_items"] = items
-                st.success(f"{len(items)}개 아이템을 추출했어. 아래에서 타입/스타일을 확인하고 추가해줘!")
-
-    items = st.session_state.get("extracted_items", [])
-    if items:
-        st.write("추출된 아이템(수정 가능):")
-        closet = load_closet()
-        for idx, it in enumerate(items):
-            with st.expander(f"{idx+1}. {it['name']}"):
-                tp = st.selectbox("카테고리", ["top","bottom","outer","shoes"], index=0, key=f"ex_tp_{idx}")
-                nm = st.text_input("이름", value=it["name"], key=f"ex_nm_{idx}")
-
-                # style suggestion from name
-                p, s = suggest_styles_openai(nm) if (use_openai and client) else suggest_styles_rule(nm)
-                ps = st.selectbox("주 스타일", STYLES, index=STYLES.index(p), key=f"ex_ps_{idx}")
-                ss_opt = ["없음"] + STYLES
-                ss_default = "없음" if not s else s
-                ss_pick = st.selectbox("보조 스타일", ss_opt, index=ss_opt.index(ss_default), key=f"ex_ss_{idx}")
-                ss = None if ss_pick == "없음" else ss_pick
-                if ss == ps:
-                    ss = None
-
-                if st.button("이 아이템 추가", key=f"ex_add_{idx}"):
-                    iid = f"item_{datetime.now().timestamp()}_ex{idx}"
-                    closet.append({
-                        "id": iid,
-                        "type": tp,
-                        "name": nm,
-                        "primary_style": ps,
-                        "secondary_style": ss,
-                        "image": None,
-                        "created_at": datetime.now().isoformat()
-                    })
-                    save_closet(closet)
-                    st.success("추가 완료!")
-
-st.markdown("---")
-
-# -------- 2) Closet view --------
+# =========================
+# 2) Closet view
+# =========================
 st.markdown("## 2) 👕 내 옷장")
 closet = load_closet()
 if not closet:
-    st.info("아직 옷이 없어. 위에서 먼저 등록해줘!")
+    st.info("아직 옷이 없어. 위에서 등록해줘!")
 else:
     cols = st.columns(4)
     for i, item in enumerate(closet):
@@ -530,40 +440,71 @@ else:
                 st.image(item["image"], use_container_width=True)
             else:
                 st.markdown("<div class='smallcard'>📦 이미지 없음</div>", unsafe_allow_html=True)
-            st.caption(f"{item['type']} | 주:{item['primary_style']} / 보조:{item['secondary_style'] if item.get('secondary_style') else '-'}")
+            ps = item.get("primary_style") or "-"
+            ss = item.get("secondary_style") or "-"
+            st.caption(f"{item['type']} | 주:{ps} / 보조:{ss}")
             st.caption(item["name"])
 
 st.markdown("---")
 
-# -------- 3) Recommend + Feedback loop --------
-st.markdown("## 3) 🌦️ 오늘의 코디 추천 + 피드백")
-temp = weather.get("temperature")
-temp_bias = float(profile.get("temp_bias", 0.0))
+# =========================
+# 3) Situation-based recommendation (핵심 변경)
+# =========================
+st.markdown("## 3) 🗓️ 오늘 상황 기반 코디 추천")
+st.caption(f"개인 온도 보정값(temp_bias): {temp_bias:+.1f}°C  (피드백으로 자동 학습)")
 
-st.caption(f"개인 보정값(temp_bias): {temp_bias:+.1f}°C  (피드백으로 자동 조정)")
+situation = st.selectbox("오늘 상황을 선택해줘", SITUATIONS)
+st.caption("상황 힌트: " + situation_hint(situation))
 
-today_primary = st.selectbox("오늘 주 스타일", STYLES, index=0)
-today_secondary_pick = st.selectbox("오늘 보조 스타일(선택)", ["없음"] + STYLES, index=0)
-today_secondary = None if today_secondary_pick == "없음" else today_secondary_pick
-if today_secondary == today_primary:
-    today_secondary = None
-    st.info("보조 스타일이 주 스타일과 같아서 '없음'으로 처리했어.")
+# Optional style input for users who know styles
+optional_style = st.selectbox("스타일도 고려할래? (선택)", ["선택안함"] + STYLES, index=0)
+user_style_primary = None if optional_style == "선택안함" else optional_style
+
+# Build OpenAI guidance (optional)
+guidance = None
+if use_openai and client:
+    with st.expander("🤖 OpenAI 상황 가이드(자동 생성) 보기", expanded=False):
+        closet_summary = [{"type": i.get("type"), "name": i.get("name")} for i in closet][:50]
+        if st.button("상황 가이드 생성(추천 정확도↑)"):
+            guidance = build_guidance_with_openai(weather, situation, closet_summary)
+            st.session_state["guidance"] = guidance
+
+        guidance = st.session_state.get("guidance")
+        if guidance:
+            st.write(guidance.get("notes", ""))
+            st.caption(f"tone: {guidance.get('tone')}")
+            st.write("선호 키워드:", guidance.get("prefer_keywords", []))
+            st.write("회피 키워드:", guidance.get("avoid_keywords", []))
+        else:
+            st.info("버튼을 누르면 상황 기반 추천 기준을 AI가 만들어줘요(무료 API 아님: OpenAI 필요).")
 
 if st.button("OOTD 추천"):
     if not closet:
         st.error("옷장이 비어있어. 먼저 옷을 등록해줘!")
         st.stop()
 
-    outfit, reasons, meta = recommend(closet, temp, today_primary, today_secondary, temp_bias=temp_bias)
+    # use guidance if exists in session
+    guidance = st.session_state.get("guidance", None) if (use_openai and client) else None
+
+    outfit, reasons, meta = recommend(
+        closet=closet,
+        weather=weather,
+        situation=situation,
+        temp_bias=temp_bias,
+        guidance=guidance,
+        user_style_primary=user_style_primary
+    )
 
     st.session_state["last_outfit"] = outfit
     st.session_state["last_reasons"] = reasons
     st.session_state["last_meta"] = meta
     st.session_state["last_ctx"] = {
+        "user_id": user_id,
         "lat": lat, "lon": lon,
         "weather": weather,
-        "today_primary": today_primary,
-        "today_secondary": today_secondary
+        "situation": situation,
+        "user_style_primary": user_style_primary,
+        "guidance": guidance
     }
 
     st.markdown("### ✨ 추천 결과")
@@ -574,27 +515,29 @@ if st.button("OOTD 추천"):
         else:
             st.write("📦 이미지 없음")
         st.markdown(f"**{k.upper()} | {v['name']}**")
-        st.caption(f"주:{v.get('primary_style')} / 보조:{v.get('secondary_style') if v.get('secondary_style') else '-'}")
-        for r in reasons[v["id"]]:
+        ps = v.get("primary_style") or "-"
+        ss = v.get("secondary_style") or "-"
+        st.caption(f"태그(선택): 주:{ps} / 보조:{ss}")
+        for r in reasons.get(v["id"], []):
             st.caption("• " + r)
         st.markdown("</div>", unsafe_allow_html=True)
 
-    # AI summary
     if use_openai and client:
-        ai_msg = explain_outfit_ai(weather, today_primary, today_secondary, outfit, reasons, meta)
+        ai_msg = explain_outfit_ai(weather, situation, outfit, reasons, meta, guidance)
         if ai_msg:
             st.markdown("### 🧠 AI 요약")
             st.write(ai_msg)
 
-# Feedback UI (appears after recommendation)
+# =========================
+# 4) Feedback loop (추움/딱좋음/더움)
+# =========================
 last_outfit = st.session_state.get("last_outfit")
 if last_outfit:
     st.markdown("### 🧊🔥 오늘 추천, 어땠어?")
     fb = st.radio("체감 온도 피드백", ["추움", "딱 좋음", "더움"], horizontal=True)
-    note = st.text_input("한 줄 코멘트(선택)", placeholder="예: 아우터가 너무 두꺼웠어 / 바지가 더 캐주얼했으면")
+    note = st.text_input("한 줄 코멘트(선택)", placeholder="예: 아우터가 너무 두꺼웠어 / 상의가 더 단정했으면")
 
     if st.button("피드백 저장"):
-        # Save feedback log
         logs = load_feedback()
         ctx = st.session_state.get("last_ctx", {})
         meta = st.session_state.get("last_meta", {})
@@ -609,27 +552,26 @@ if last_outfit:
         })
         save_feedback(logs)
 
-        # Update temp_bias simple learning
+        # update personal temp_bias
         prof = load_profile()
         bias = float(prof.get("temp_bias", 0.0))
         if fb == "추움":
-            bias += 1.0  # next time, treat as colder -> recommend warmer
+            bias += 1.0
         elif fb == "더움":
-            bias -= 1.0  # recommend lighter
-        else:
-            bias += 0.0
-        # clamp
+            bias -= 1.0
         bias = max(-5.0, min(5.0, bias))
         prof["temp_bias"] = bias
         save_profile(prof)
 
         st.success(f"피드백 저장 완료! 다음 추천부터 보정값이 {bias:+.1f}°C로 반영돼.")
-        # optional: clear last outfit so user doesn't double-submit
         st.session_state.pop("last_outfit", None)
 
-# -------- Feedback stats (optional) --------
 st.markdown("---")
-st.markdown("## 4) 📊 피드백 통계(간단)")
+
+# =========================
+# 5) Feedback stats
+# =========================
+st.markdown("## 5) 📊 피드백 통계(간단)")
 logs = load_feedback()
 if not logs:
     st.info("아직 피드백 로그가 없어.")
