@@ -6,34 +6,64 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 
 # =========================
-# UI (Instagram-style Dark)
+# Theme (Auto Light/Dark)
 # =========================
-st.set_page_config(page_title="ootd", layout="wide")
+def inject_theme_css():
+    st.markdown("""
+    <style>
+    :root{
+      --bg: #F6F7FB;
+      --panel: #FFFFFF;
+      --text: #111827;
+      --muted: #6B7280;
+      --border: #E5E7EB;
+      --primary: #4F7FFF;
+      --card: #FFFFFF;
+      --shadow: 0 8px 24px rgba(0,0,0,0.08);
+    }
+    @media (prefers-color-scheme: dark){
+      :root{
+        --bg: #121212;
+        --panel: #1A1A1A;
+        --text: #EAEAEA;
+        --muted: #A3A3A3;
+        --border: #2A2A2A;
+        --primary: #4F7FFF;
+        --card: #1E1E1E;
+        --shadow: 0 10px 28px rgba(0,0,0,0.35);
+      }
+    }
+    .stApp { background-color: var(--bg); color: var(--text); }
+    section[data-testid="stSidebar"] { background-color: var(--panel); }
+    .card, .smallcard {
+      background-color: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 16px;
+      margin-bottom: 16px;
+      box-shadow: var(--shadow);
+      color: var(--text);
+    }
+    .stCaption { color: var(--muted) !important; }
+    .stButton>button {
+      background-color: var(--primary);
+      color: white;
+      border-radius: 20px;
+      border: 0;
+    }
+    .stButton>button:hover { filter: brightness(0.95); }
+    input, textarea, [data-baseweb="select"] > div {
+      background-color: var(--panel) !important;
+      color: var(--text) !important;
+      border: 1px solid var(--border) !important;
+      border-radius: 12px !important;
+    }
+    hr { border: none; border-top: 1px solid var(--border); margin: 14px 0; }
+    </style>
+    """, unsafe_allow_html=True)
 
-st.markdown("""
-<style>
-.stApp { background-color: #121212; color: #EAEAEA; }
-section[data-testid="stSidebar"] { background-color: #1A1A1A; }
-.card {
-    background-color: #1E1E1E;
-    border-radius: 18px;
-    padding: 16px;
-    margin-bottom: 16px;
-}
-.smallcard {
-    background-color: #1E1E1E;
-    border-radius: 14px;
-    padding: 12px;
-    margin-bottom: 10px;
-}
-.stButton>button {
-    background-color: #4F7FFF;
-    color: white;
-    border-radius: 20px;
-}
-hr { border: none; border-top: 1px solid #2A2A2A; margin: 14px 0; }
-</style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="ootd", layout="wide")
+inject_theme_css()
 
 # =========================
 # Helpers
@@ -55,6 +85,37 @@ def safe_slug(s: str) -> str:
 def clamp(x, lo, hi):
     return max(lo, min(hi, x))
 
+def top_items(d, n=6):
+    return sorted((d or {}).items(), key=lambda x: x[1], reverse=True)[:n]
+
+# =========================
+# ✅ Image Normalization
+# =========================
+NORMAL_SIZE = 640  # 옷장 이미지 통일 크기
+
+def normalize_to_square(im: Image.Image, size: int = NORMAL_SIZE) -> Image.Image:
+    """
+    1) EXIF 회전 보정
+    2) 중앙 기준 정사각형 크롭
+    3) size x size로 리사이즈
+    """
+    try:
+        im = ImageOps.exif_transpose(im)
+    except:
+        pass
+
+    im = im.convert("RGB")
+    w, h = im.size
+    side = min(w, h)
+    left = (w - side) // 2
+    top = (h - side) // 2
+    im = im.crop((left, top, left + side, top + side))
+    im = im.resize((size, size), Image.LANCZOS)
+    return im
+
+# ImageOps를 사용하므로 import 추가
+from PIL import ImageOps
+
 # =========================
 # Sidebar
 # =========================
@@ -62,6 +123,9 @@ with st.sidebar:
     st.header("👤 사용자")
     user_id = safe_slug(st.text_input("사용자 ID(닉네임/이메일)", value="guest"))
     st.caption("ID가 다르면 옷장/피드백/취향학습이 분리 저장돼요.")
+
+    st.markdown("---")
+    page = st.radio("📄 페이지", ["🏠 메인(등록/추천)", "📊 피드백 리포트"], index=0)
 
     st.markdown("---")
     st.header("🔑 API 설정")
@@ -94,7 +158,6 @@ if not CLOSET.exists():
 if not FEEDBACK.exists():
     FEEDBACK.write_text("[]", encoding="utf-8")
 if not PROFILE.exists():
-    # ✅ 취향 학습 구조 포함
     PROFILE.write_text(json.dumps({
         "temp_bias": 0.0,
         "taste": {
@@ -106,18 +169,10 @@ if not PROFILE.exists():
         }
     }, ensure_ascii=False, indent=2), encoding="utf-8")
 
-def load_closet():
-    return load_json(CLOSET, [])
-
-def save_closet(c):
-    save_json(CLOSET, c)
-
-def load_feedback():
-    return load_json(FEEDBACK, [])
-
-def save_feedback(fb):
-    save_json(FEEDBACK, fb)
-
+def load_closet(): return load_json(CLOSET, [])
+def save_closet(c): save_json(CLOSET, c)
+def load_feedback(): return load_json(FEEDBACK, [])
+def save_feedback(fb): save_json(FEEDBACK, fb)
 def load_profile():
     return load_json(PROFILE, {
         "temp_bias": 0.0,
@@ -129,12 +184,10 @@ def load_profile():
             "rating_count": 0
         }
     })
-
-def save_profile(p):
-    save_json(PROFILE, p)
+def save_profile(p): save_json(PROFILE, p)
 
 # =========================
-# OpenAI client
+# OpenAI client (optional)
 # =========================
 client = None
 if use_openai and openai_key:
@@ -145,7 +198,7 @@ if use_openai and openai_key:
         client = None
 
 # =========================
-# Free APIs
+# Free APIs: Weather + Reverse geocode
 # =========================
 def reverse_geocode(lat, lon):
     try:
@@ -214,7 +267,7 @@ def situation_hint(s):
     return mapping.get(s, "")
 
 # =========================
-# Placeholder image generator
+# Placeholder images
 # =========================
 def _get_font(size: int):
     try:
@@ -249,28 +302,25 @@ def draw_simple_icon(draw: ImageDraw.ImageDraw, category: str, x: int, y: int, w
         draw.rounded_rectangle([x+w*0.25, y+h*0.75, x+w*0.82, y+h*0.86], radius=18,
                                outline=stroke, width=4, fill=fill)
 
-def make_placeholder_image(name: str, category: str, out_path: Path, size=(640, 640)):
+def make_placeholder_image(name: str, category: str, out_path: Path, size=(NORMAL_SIZE, NORMAL_SIZE)):
     img = Image.new("RGB", size, (24, 24, 24))
     draw = ImageDraw.Draw(img)
     draw.rounded_rectangle([24, 18, size[0]-24, 82], radius=22, fill=(36, 36, 36))
     font_small = _get_font(20)
     draw.text((44, 38), f"ootd • {category}", fill=(230, 230, 230), font=font_small)
-
     icon_box = (60, 120, size[0]-60, 420)
     draw.rounded_rectangle(icon_box, radius=34, fill=(30, 30, 30), outline=(70, 70, 70), width=2)
     x1, y1, x2, y2 = icon_box
     draw_simple_icon(draw, category, x1, y1, x2-x1, y2-y1)
-
     font = _get_font(28)
     nm = (name or "item").strip() or "item"
     draw.text((60, 450), nm[:28], fill=(245, 245, 245), font=font)
-
     draw.rounded_rectangle([60, size[1]-120, size[0]-60, size[1]-58], radius=26, fill=(79, 127, 255))
     draw.text((80, size[1]-105), "auto-generated", fill=(255, 255, 255), font=font_small)
     img.save(out_path)
 
 # =========================
-# OpenAI Vision: photo -> meta
+# OpenAI Vision (optional)
 # =========================
 def analyze_clothing_image_with_openai(image_bytes: bytes, fallback_name: str = ""):
     if not client:
@@ -282,15 +332,12 @@ def analyze_clothing_image_with_openai(image_bytes: bytes, fallback_name: str = 
 - pattern: {PATTERNS}
 - warmth: {WARMTH}
 - vibe: {VIBES}
-
 규칙:
 - 확실치 않으면 unknown
 - desc는 한국어 1문장(짧게)
 JSON만 반환.
-
 힌트: {fallback_name}
-반환:
-{{"color":"black","pattern":"solid","warmth":"normal","vibe":"dandy","desc":"..."}}
+반환: {{"color":"black","pattern":"solid","warmth":"normal","vibe":"dandy","desc":"..."}}
 """.strip()
     try:
         resp = client.responses.create(
@@ -307,13 +354,11 @@ JSON만 반환.
         if not m:
             return {"color":"unknown","pattern":"unknown","warmth":"unknown","vibe":"unknown","desc":""}
         data = json.loads(m.group(0))
-
         c = data.get("color","unknown")
         p = data.get("pattern","unknown")
         w = data.get("warmth","unknown")
         v = data.get("vibe","unknown")
         d = str(data.get("desc",""))[:120]
-
         if c not in COLORS: c = "unknown"
         if p not in PATTERNS: p = "unknown"
         if w not in WARMTH: w = "unknown"
@@ -323,7 +368,7 @@ JSON만 반환.
         return {"color":"unknown","pattern":"unknown","warmth":"unknown","vibe":"unknown","desc":""}
 
 # =========================
-# Taste learning helpers (AI 중심)
+# Taste learning + scoring
 # =========================
 def inc(d: dict, key: str, delta: int = 1):
     if not key: return
@@ -331,34 +376,22 @@ def inc(d: dict, key: str, delta: int = 1):
 
 def update_taste_from_feedback(profile: dict, outfit: dict, rating: int, fb_temp: str,
                                color_fb: str, pattern_fb: str, vibe_fb: str):
-    """
-    - rating: 1~5
-    - fb_temp: 추움/딱 좋음/더움
-    - color_fb/pattern_fb/vibe_fb: 좋음/별로/상관없음
-    """
     taste = profile.setdefault("taste", {
         "color_pref": {}, "color_avoid": {},
         "pattern_pref": {}, "pattern_avoid": {},
         "vibe_pref": {}, "vibe_avoid": {},
         "avg_rating": 0.0, "rating_count": 0
     })
-
-    # 1) 별점 평균 업데이트
     cnt = int(taste.get("rating_count", 0))
     avg = float(taste.get("avg_rating", 0.0))
-    new_avg = (avg * cnt + rating) / (cnt + 1)
-    taste["avg_rating"] = round(new_avg, 3)
+    taste["avg_rating"] = round((avg * cnt + rating) / (cnt + 1), 3)
     taste["rating_count"] = cnt + 1
 
-    # 2) 온도 보정 학습(기존 유지)
     bias = float(profile.get("temp_bias", 0.0))
-    if fb_temp == "추움":
-        bias += 1.0
-    elif fb_temp == "더움":
-        bias -= 1.0
+    if fb_temp == "추움": bias += 1.0
+    elif fb_temp == "더움": bias -= 1.0
     profile["temp_bias"] = clamp(bias, -5.0, 5.0)
 
-    # 3) 색/패턴/분위기 학습: 코디에 등장한 값들에 대해 누적
     colors = [it.get("color","unknown") for it in outfit.values()]
     patterns = [it.get("pattern","unknown") for it in outfit.values()]
     vibes = [it.get("vibe","unknown") for it in outfit.values()]
@@ -387,9 +420,6 @@ def update_taste_from_feedback(profile: dict, outfit: dict, rating: int, fb_temp
     return profile
 
 def taste_score_for_outfit(profile: dict, outfit: dict):
-    """
-    사용자 taste를 기반으로 outfit에 가산/감점
-    """
     taste = profile.get("taste", {})
     cp = taste.get("color_pref", {})
     ca = taste.get("color_avoid", {})
@@ -397,7 +427,6 @@ def taste_score_for_outfit(profile: dict, outfit: dict):
     pa = taste.get("pattern_avoid", {})
     vp = taste.get("vibe_pref", {})
     va = taste.get("vibe_avoid", {})
-
     score = 0
     reasons = []
 
@@ -405,11 +434,10 @@ def taste_score_for_outfit(profile: dict, outfit: dict):
     patterns = [it.get("pattern","unknown") for it in outfit.values()]
     vibes = [it.get("vibe","unknown") for it in outfit.values()]
 
-    # 너무 강하게 하지 말고 "누적값의 log-like"로 완만하게
     for c in colors:
         if c != "unknown":
             if c in cp:
-                add = min(2, int(cp[c] // 3) + 1)  # 1~2
+                add = min(2, int(cp[c] // 3) + 1)
                 score += add
                 reasons.append(f"취향(색) 선호: {c} (+{add})")
             if c in ca:
@@ -442,7 +470,7 @@ def taste_score_for_outfit(profile: dict, outfit: dict):
     return score, reasons[:10]
 
 # =========================
-# Color/pattern/vibe scoring
+# Rule scores
 # =========================
 NEUTRALS = {"black","white","gray","navy","beige","brown"}
 
@@ -450,10 +478,10 @@ def color_compat_score(colors: dict):
     vals = [c for c in colors.values() if c and c != "unknown"]
     if not vals:
         return 0, ["색 정보 부족(unknown)"]
-    reasons = []
-    score = 0
     neutral_cnt = sum(1 for c in vals if c in NEUTRALS)
     multi_cnt = sum(1 for c in vals if c == "multi")
+    score = 0
+    reasons = []
     if neutral_cnt >= 3:
         score += 2; reasons.append("뉴트럴 중심이라 안정적")
     elif neutral_cnt >= 2:
@@ -471,8 +499,7 @@ def pattern_compat_score(patterns: dict):
         return 1, ["전체 무지라 깔끔"]
     if len(non_solid) == 1:
         return 2, ["패턴 1개 포인트"]
-    unique = set(non_solid)
-    if len(unique) >= 2:
+    if len(set(non_solid)) >= 2:
         return -1, ["서로 다른 패턴이 많으면 산만"]
     return 0, ["같은 계열 패턴 다수(중립)"]
 
@@ -484,7 +511,7 @@ def vibe_fit_score(vibes: dict, situation: str):
         desired |= {"dandy","minimal","cute"}
     if any(x in situation for x in ["운동","러닝"]):
         desired |= {"sporty"}
-    if any(x in situation for x in ["학교","수업","꾸안꾸","집콕","근처 마실"]):
+    if any(x in situation for x in ["학교","수업","꾸안꾸","집콕","근처","마실"]):
         desired |= {"casual","minimal"}
     if "여행" in situation or "나들이" in situation:
         desired |= {"casual","street","minimal"}
@@ -500,41 +527,38 @@ def vibe_fit_score(vibes: dict, situation: str):
     return -1, ["상황 vibe와 다소 다름"]
 
 # =========================
-# AI rerank (선택)
+# AI rerank (optional)
 # =========================
 def ai_rerank_outfits(weather, situation, profile, candidates):
     if not client or not candidates:
         return None
-
     taste = profile.get("taste", {})
     taste_summary = {
-        "color_pref_top": sorted(taste.get("color_pref", {}).items(), key=lambda x: x[1], reverse=True)[:5],
-        "color_avoid_top": sorted(taste.get("color_avoid", {}).items(), key=lambda x: x[1], reverse=True)[:5],
-        "pattern_pref_top": sorted(taste.get("pattern_pref", {}).items(), key=lambda x: x[1], reverse=True)[:5],
-        "pattern_avoid_top": sorted(taste.get("pattern_avoid", {}).items(), key=lambda x: x[1], reverse=True)[:5],
-        "vibe_pref_top": sorted(taste.get("vibe_pref", {}).items(), key=lambda x: x[1], reverse=True)[:5],
-        "vibe_avoid_top": sorted(taste.get("vibe_avoid", {}).items(), key=lambda x: x[1], reverse=True)[:5],
+        "color_pref_top": top_items(taste.get("color_pref", {}), 5),
+        "color_avoid_top": top_items(taste.get("color_avoid", {}), 5),
+        "pattern_pref_top": top_items(taste.get("pattern_pref", {}), 5),
+        "pattern_avoid_top": top_items(taste.get("pattern_avoid", {}), 5),
+        "vibe_pref_top": top_items(taste.get("vibe_pref", {}), 5),
+        "vibe_avoid_top": top_items(taste.get("vibe_avoid", {}), 5),
     }
-
     simplified = []
     for c in candidates[:6]:
-        outfit = c["outfit"]
+        o = c["outfit"]
         simplified.append({
             "id": c["id"],
             "score": c["score"],
             "items": {k: {
-                "name": outfit[k].get("name"),
-                "type": outfit[k].get("type"),
-                "color": outfit[k].get("color"),
-                "pattern": outfit[k].get("pattern"),
-                "warmth": outfit[k].get("warmth"),
-                "vibe": outfit[k].get("vibe"),
-            } for k in outfit.keys()}
+                "name": o[k].get("name"),
+                "type": o[k].get("type"),
+                "color": o[k].get("color"),
+                "pattern": o[k].get("pattern"),
+                "warmth": o[k].get("warmth"),
+                "vibe": o[k].get("vibe"),
+            } for k in o.keys()}
         })
-
     prompt = f"""
 너는 OOTD 코디 선택 심사위원이야.
-아래 "사용자 취향 요약"을 강하게 반영해서, 날씨/상황에 가장 적합한 후보 1개를 골라.
+"사용자 취향 요약"을 강하게 반영해서 날씨/상황에 가장 적합한 후보 1개를 골라.
 반환은 JSON만.
 
 - 날씨: {weather}
@@ -542,10 +566,8 @@ def ai_rerank_outfits(weather, situation, profile, candidates):
 - 사용자 취향 요약: {taste_summary}
 - 후보: {simplified}
 
-반환:
-{{"best_id":"c1","why":"짧게 1~2문장"}}
+반환: {{"best_id":"c1","why":"짧게 1~2문장"}}
 """.strip()
-
     try:
         resp = client.responses.create(model="gpt-4.1-mini", input=prompt)
         m = re.search(r"\{.*\}", resp.output_text, re.DOTALL)
@@ -557,7 +579,7 @@ def ai_rerank_outfits(weather, situation, profile, candidates):
         return None
 
 # =========================
-# Recommendation
+# Recommend
 # =========================
 def recommend(profile, closet, weather, situation, user_style_primary=None, do_ai_rerank=False):
     temp_bias = float(profile.get("temp_bias", 0.0))
@@ -590,7 +612,6 @@ def recommend(profile, closet, weather, situation, user_style_primary=None, do_a
                 if warmth == "thin": s += 1; r.append("thin→더운날 가산")
                 if warmth == "thick": s -= 1; r.append("thick→더운날 감점")
 
-        # situation + name keyword
         if wants_formal:
             if any(k in name for k in ["셔츠","슬랙","코트","자켓","블레이저","로퍼"]):
                 s += 3; r.append("격식 키워드 매칭")
@@ -605,12 +626,10 @@ def recommend(profile, closet, weather, situation, user_style_primary=None, do_a
             if any(k in name for k in ["운동","트레이닝","러닝","조거","스니커"]):
                 s += 3; r.append("운동 키워드 매칭")
 
-        # optional style tag
         if user_style_primary:
             if it.get("primary_style") == user_style_primary or it.get("secondary_style") == user_style_primary:
                 s += 1; r.append("선택 스타일 태그 일치")
 
-        # vibe quick boost
         if wants_formal and vibe in ["formal","minimal","dandy"]:
             s += 1; r.append("격식상황 vibe 일치")
         if wants_sporty and vibe == "sporty":
@@ -634,19 +653,19 @@ def recommend(profile, closet, weather, situation, user_style_primary=None, do_a
     if not tops or not bottoms or not shoes:
         return None, [], {"error":"카테고리 부족(top/bottom/shoes 필요)"}, None
 
-    cid = 0
-    candidates = []
-
     include_outer_default = True
     if effective_temp is not None and effective_temp >= 22:
         include_outer_default = False
 
+    cid = 0
+    candidates = []
     outer_options = outers[:3] if outers else [None]
+
     for t in tops:
         for b in bottoms:
-            for s in shoes:
+            for s_ in shoes:
                 for o in outer_options:
-                    outfit = {"top": t, "bottom": b, "shoes": s}
+                    outfit = {"top": t, "bottom": b, "shoes": s_}
                     if o is not None:
                         outfit["outer"] = o
 
@@ -662,13 +681,10 @@ def recommend(profile, closet, weather, situation, user_style_primary=None, do_a
                     c_sc, c_rs = color_compat_score(colors)
                     p_sc, p_rs = pattern_compat_score(patterns)
                     v_sc, v_rs = vibe_fit_score(vibes, situation)
-
-                    # ✅ 학습된 취향 점수(개인화)
                     t_sc, t_rs = taste_score_for_outfit(profile, outfit)
 
                     total = base + c_sc + p_sc + v_sc + t_sc
 
-                    # 더운 날 outer 감점
                     if effective_temp is not None and effective_temp >= 22 and "outer" in outfit:
                         total -= 1
                         rs.append("더운날 아우터 감점")
@@ -680,7 +696,8 @@ def recommend(profile, closet, weather, situation, user_style_primary=None, do_a
                         "id": f"c{cid}",
                         "score": total,
                         "outfit": outfit,
-                        "reasons": list(dict.fromkeys(rs + c_rs + p_rs + v_rs + t_rs))[:20]
+                        "reasons": list(dict.fromkeys(rs + c_rs + p_rs + v_rs + t_rs))[:22],
+                        "effective_temp": effective_temp
                     })
 
     candidates.sort(key=lambda x: x["score"], reverse=True)
@@ -706,284 +723,389 @@ st.title("🧥 ootd")
 loc_name = reverse_geocode(lat, lon)
 weather = get_weather(lat, lon)
 profile = load_profile()
+taste = profile.get("taste", {})
 
 st.markdown("<div class='smallcard'>", unsafe_allow_html=True)
 st.write("👤 사용자:", user_id)
 st.write("📍 위치:", loc_name if loc_name else f"{lat:.4f}, {lon:.4f}")
 st.write("🌦️ 현재:", f"{weather.get('temperature')}°C", f"💨 바람 {weather.get('windspeed')}km/h")
 st.caption(f"시간: {weather.get('time')}")
-taste = profile.get("taste", {})
 st.caption(f"⭐ 평균 별점: {taste.get('avg_rating',0):.2f} (누적 {taste.get('rating_count',0)}회)")
+st.caption(f"🌡️ 온도 보정(temp_bias): {profile.get('temp_bias',0):+.1f}°C")
 st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================
-# 1) Register
+# PAGE: MAIN
 # =========================
-st.markdown("## 1) 📸 옷장 등록(사진 분석으로 색/패턴/분위기 저장)")
-closet = load_closet()
-
-col1, col2 = st.columns([1,1])
-with col1:
-    img = st.file_uploader("옷 사진 업로드(권장)", type=["jpg","png"], key="cloth_img")
-    item_type = st.selectbox("카테고리", CATEGORIES, key="cloth_type")
-    name = st.text_input("아이템 이름(권장)", placeholder="예: 검정 셔츠, 슬랙스", key="cloth_name")
-    auto_analyze = st.toggle("저장 시 사진 자동 분석(Vision)", value=True)
-
-with col2:
-    st.markdown("### 🎯 스타일 태그(선택)")
-    st.caption("스타일은 모르면 안 해도 돼요. (상황+AI가 메인)")
-    style_use = st.toggle("스타일 태그 입력(선택)", value=False)
-    primary_style = None
-    secondary_style = None
-    if style_use:
-        ps = st.selectbox("주 스타일(선택)", ["선택안함"] + STYLES, index=0)
-        ss = st.selectbox("보조 스타일(선택)", ["없음"] + STYLES, index=0)
-        primary_style = None if ps == "선택안함" else ps
-        secondary_style = None if ss == "없음" else ss
-        if primary_style and secondary_style == primary_style:
-            secondary_style = None
-
-    st.markdown("### 🧠 AI 분석 미리보기")
-    if img and use_openai and use_vision and client:
-        if st.button("AI로 사진 분석(미리보기)"):
-            meta = analyze_clothing_image_with_openai(img.getvalue(), fallback_name=name)
-            st.session_state["vision_preview"] = meta
-    meta_prev = st.session_state.get("vision_preview")
-    if meta_prev:
-        st.write(meta_prev)
-
-if st.button("옷장에 저장"):
+if page == "🏠 메인(등록/추천)":
+    st.markdown("## 1) 📸 옷장 등록 (이미지 크기 정규화)")
     closet = load_closet()
-    iid = f"item_{datetime.now().timestamp()}"
-    img_path = IMG_DIR / f"{iid}.png"
 
-    if img:
-        Image.open(img).save(img_path)
+    c1, c2 = st.columns([1,1])
+    with c1:
+        img = st.file_uploader("옷 사진 업로드(권장)", type=["jpg","png"], key="cloth_img")
+        item_type = st.selectbox("카테고리", CATEGORIES, key="cloth_type")
+        name = st.text_input("아이템 이름(권장)", placeholder="예: 검정 셔츠, 슬랙스", key="cloth_name")
+        auto_analyze = st.toggle("저장 시 사진 자동 분석(Vision)", value=True)
+        st.caption(f"✅ 저장 시 이미지가 {NORMAL_SIZE}x{NORMAL_SIZE}로 자동 정규화돼요.")
+
+    with c2:
+        st.markdown("### 🎯 스타일 태그(선택)")
+        st.caption("스타일은 몰라도 OK. (상황+AI가 메인)")
+        style_use = st.toggle("스타일 태그 입력(선택)", value=False)
+        primary_style = None
+        secondary_style = None
+        if style_use:
+            ps = st.selectbox("주 스타일(선택)", ["선택안함"] + STYLES, index=0)
+            ss = st.selectbox("보조 스타일(선택)", ["없음"] + STYLES, index=0)
+            primary_style = None if ps == "선택안함" else ps
+            secondary_style = None if ss == "없음" else ss
+            if primary_style and secondary_style == primary_style:
+                secondary_style = None
+
+        st.markdown("### 🧠 AI 분석 미리보기")
+        if img and use_openai and use_vision and client:
+            if st.button("AI로 사진 분석(미리보기)"):
+                meta = analyze_clothing_image_with_openai(img.getvalue(), fallback_name=name)
+                st.session_state["vision_preview"] = meta
+        meta_prev = st.session_state.get("vision_preview")
+        if meta_prev:
+            st.write(meta_prev)
+
+        if img:
+            st.markdown("### 🖼️ 저장될 이미지 미리보기(정규화)")
+            try:
+                im = normalize_to_square(Image.open(img), NORMAL_SIZE)
+                st.image(im, width=260)
+            except:
+                st.info("미리보기 실패(이미지 확인 필요)")
+
+    if st.button("옷장에 저장"):
+        closet = load_closet()
+        iid = f"item_{datetime.now().timestamp()}"
+        img_path = IMG_DIR / f"{iid}.png"
+
+        if img:
+            try:
+                im = normalize_to_square(Image.open(img), NORMAL_SIZE)
+                im.save(img_path)
+            except:
+                # 실패 시 원본 저장
+                Image.open(img).convert("RGB").save(img_path)
+        else:
+            make_placeholder_image(name if name else item_type, item_type, img_path)
+
+        vision_meta = {"color":"unknown","pattern":"unknown","warmth":"unknown","vibe":"unknown","desc":""}
+        if img and auto_analyze and use_openai and use_vision and client:
+            vision_meta = analyze_clothing_image_with_openai(img.getvalue(), fallback_name=name)
+
+        closet.append({
+            "id": iid,
+            "type": item_type,
+            "name": name if name else item_type,
+            "primary_style": primary_style,
+            "secondary_style": secondary_style,
+            "image": str(img_path),
+            "color": vision_meta.get("color","unknown"),
+            "pattern": vision_meta.get("pattern","unknown"),
+            "warmth": vision_meta.get("warmth","unknown"),
+            "vibe": vision_meta.get("vibe","unknown"),
+            "desc": vision_meta.get("desc",""),
+            "created_at": datetime.now().isoformat(),
+            "source": "manual_photo_norm"
+        })
+        save_closet(closet)
+        st.success("저장 완료! (이미지 정규화 + 추천/학습 반영) ✅")
+        st.rerun()
+
+    st.markdown("---")
+
+    # ---------- 2) Closet ----------
+    st.markdown("## 2) 👕 내 옷장 (그리드 정규화)")
+    closet = load_closet()
+    if "pending_delete_id" not in st.session_state:
+        st.session_state["pending_delete_id"] = None
+
+    if not closet:
+        st.info("아직 옷이 없어. 위에서 등록해줘!")
     else:
-        make_placeholder_image(name if name else item_type, item_type, img_path)
+        cols = st.columns(4)
+        for i, item in enumerate(closet):
+            with cols[i % 4]:
+                st.markdown("<div class='smallcard'>", unsafe_allow_html=True)
 
-    vision_meta = {"color":"unknown","pattern":"unknown","warmth":"unknown","vibe":"unknown","desc":""}
-    if img and auto_analyze and use_openai and use_vision and client:
-        vision_meta = analyze_clothing_image_with_openai(img.getvalue(), fallback_name=name)
+                # ✅ 옷장에서도 표시 크기 통일
+                if item.get("image"):
+                    st.image(item["image"], use_container_width=True)
 
-    closet.append({
-        "id": iid,
-        "type": item_type,
-        "name": name if name else item_type,
-        "primary_style": primary_style,
-        "secondary_style": secondary_style,
-        "image": str(img_path),
-        "color": vision_meta.get("color","unknown"),
-        "pattern": vision_meta.get("pattern","unknown"),
-        "warmth": vision_meta.get("warmth","unknown"),
-        "vibe": vision_meta.get("vibe","unknown"),
-        "desc": vision_meta.get("desc",""),
-        "created_at": datetime.now().isoformat(),
-        "source": "manual_photo"
-    })
-    save_closet(closet)
-    st.success("저장 완료! (이제 추천에서 색/패턴/분위기/취향 학습이 반영돼요)")
+                st.caption(item.get("name",""))
+                st.caption(f"{item.get('type')} | color:{item.get('color')} | pattern:{item.get('pattern')}")
+                st.caption(f"warmth:{item.get('warmth')} | vibe:{item.get('vibe')}")
+                if item.get("desc"):
+                    st.caption("AI: " + item["desc"])
 
-st.markdown("---")
+                item_id = item.get("id")
+                is_pending = (st.session_state["pending_delete_id"] == item_id)
 
-# =========================
-# 2) Closet + delete confirm
-# =========================
-st.markdown("## 2) 👕 내 옷장")
-closet = load_closet()
-
-if "pending_delete_id" not in st.session_state:
-    st.session_state["pending_delete_id"] = None
-
-if not closet:
-    st.info("아직 옷이 없어. 위에서 등록해줘!")
-else:
-    cols = st.columns(4)
-    for i, item in enumerate(closet):
-        with cols[i % 4]:
-            st.markdown("<div class='smallcard'>", unsafe_allow_html=True)
-            if item.get("image"):
-                st.image(item["image"], use_container_width=True)
-            st.caption(item.get("name",""))
-            st.caption(f"{item.get('type')} | color:{item.get('color')} | pattern:{item.get('pattern')}")
-            st.caption(f"warmth:{item.get('warmth')} | vibe:{item.get('vibe')}")
-            if item.get("desc"):
-                st.caption("AI: " + item["desc"])
-
-            item_id = item.get("id")
-            is_pending = (st.session_state["pending_delete_id"] == item_id)
-
-            if not is_pending:
-                if st.button("🗑️ 삭제", key=f"del_{item_id}"):
-                    st.session_state["pending_delete_id"] = item_id
-                    st.rerun()
-            else:
-                st.warning("정말 삭제할까?")
-                c1, c2 = st.columns(2)
-                with c1:
-                    if st.button("✅ 예", key=f"del_yes_{item_id}"):
-                        img_path = item.get("image")
-                        if img_path:
+                if not is_pending:
+                    if st.button("🗑️ 삭제", key=f"del_{item_id}"):
+                        st.session_state["pending_delete_id"] = item_id
+                        st.rerun()
+                else:
+                    st.warning("정말 삭제할까?")
+                    x1, x2 = st.columns(2)
+                    with x1:
+                        if st.button("✅ 예", key=f"del_yes_{item_id}"):
                             try:
-                                p = Path(img_path)
+                                p = Path(item.get("image",""))
                                 if p.exists():
                                     p.unlink()
                             except:
                                 pass
-                        new_closet = [x for x in closet if x.get("id") != item_id]
-                        save_closet(new_closet)
-                        st.session_state["pending_delete_id"] = None
-                        st.success("삭제 완료!")
-                        st.rerun()
-                with c2:
-                    if st.button("❌ 아니오", key=f"del_no_{item_id}"):
-                        st.session_state["pending_delete_id"] = None
-                        st.rerun()
+                            new_closet = [x for x in closet if x.get("id") != item_id]
+                            save_closet(new_closet)
+                            st.session_state["pending_delete_id"] = None
+                            st.success("삭제 완료!")
+                            st.rerun()
+                    with x2:
+                        if st.button("❌ 아니오", key=f"del_no_{item_id}"):
+                            st.session_state["pending_delete_id"] = None
+                            st.rerun()
 
+                st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # ---------- 3) Recommend ----------
+    st.markdown("## 3) 🗓️ 오늘 상황 기반 코디 추천 (취향 학습 반영)")
+    profile = load_profile()
+    st.caption(f"개인 온도 보정(temp_bias): {profile.get('temp_bias',0):+.1f}°C")
+    situation = st.selectbox("오늘 상황", SITUATIONS)
+    st.caption("상황 힌트: " + situation_hint(situation))
+    optional_style = st.selectbox("스타일도 고려할래? (선택)", ["선택안함"] + STYLES, index=0)
+    user_style_primary = None if optional_style == "선택안함" else optional_style
+
+    if st.button("OOTD 추천"):
+        profile = load_profile()
+        closet_now = load_closet()
+        chosen, top_candidates, meta, ai_pick = recommend(
+            profile=profile,
+            closet=closet_now,
+            weather=weather,
+            situation=situation,
+            user_style_primary=user_style_primary,
+            do_ai_rerank=(use_openai and use_ai_rerank and client)
+        )
+        if not chosen:
+            st.error("추천 실패: top/bottom/shoes를 최소 1개씩 등록해줘!")
+            st.stop()
+
+        outfit = chosen["outfit"]
+        reasons = chosen["reasons"]
+
+        st.session_state["last_outfit"] = outfit
+        st.session_state["last_reasons"] = reasons
+        st.session_state["last_meta"] = meta
+        st.session_state["last_ctx"] = {"weather": weather, "situation": situation, "user_style_primary": user_style_primary}
+
+        st.markdown("### ✨ 추천 결과")
+        for k, v in outfit.items():
+            st.markdown("<div class='card'>", unsafe_allow_html=True)
+            if v.get("image"):
+                st.image(v["image"], width=220)
+            st.markdown(f"**{k.upper()} | {v.get('name','')}**")
+            st.caption(f"color:{v.get('color')} | pattern:{v.get('pattern')} | warmth:{v.get('warmth')} | vibe:{v.get('vibe')}")
+            if v.get("desc"):
+                st.caption("AI: " + v["desc"])
             st.markdown("</div>", unsafe_allow_html=True)
 
-st.markdown("---")
+        st.markdown("### ✅ 추천 근거(요약)")
+        for rr in reasons[:14]:
+            st.caption("• " + rr)
+
+        if ai_pick and ai_pick.get("why"):
+            st.markdown("### 🤖 AI 리랭크 이유")
+            st.write(ai_pick["why"])
+
+        with st.expander("상위 후보 5개(점수)", expanded=False):
+            for c in top_candidates[:5]:
+                o = c["outfit"]
+                st.write(f"- 점수 {c['score']}: ", {k: o[k].get("name") for k in o.keys()})
+
+    st.markdown("---")
+
+    # ---------- 4) Feedback ----------
+    st.markdown("## 4) ⭐ 피드백 (온도 + 별점 + 색/패턴/분위기)")
+    last_outfit = st.session_state.get("last_outfit")
+    if not last_outfit:
+        st.info("먼저 3)에서 OOTD 추천을 받아야 피드백을 남길 수 있어요.")
+    else:
+        rating = st.slider("전체 만족도(별점)", 1, 5, 4)
+        fb_temp = st.radio("체감 온도", ["추움", "딱 좋음", "더움"], horizontal=True)
+
+        a, b, c = st.columns(3)
+        with a:
+            color_fb = st.radio("색 조합", ["좋음", "상관없음", "별로"], index=1, horizontal=True)
+        with b:
+            pattern_fb = st.radio("패턴 조합", ["좋음", "상관없음", "별로"], index=1, horizontal=True)
+        with c:
+            vibe_fb = st.radio("분위기(vibe)", ["좋음", "상관없음", "별로"], index=1, horizontal=True)
+
+        note = st.text_input("한 줄 코멘트(선택)", placeholder="예: 색은 좋은데 패턴이 과했어 / 더 포멀했으면")
+
+        if st.button("피드백 저장"):
+            logs = load_feedback()
+            ctx = st.session_state.get("last_ctx", {})
+            meta = st.session_state.get("last_meta", {})
+            reasons = st.session_state.get("last_reasons", [])
+
+            logs.append({
+                "time": datetime.now().isoformat(),
+                "rating": rating,
+                "temp_feedback": fb_temp,
+                "style_feedback": {"color": color_fb, "pattern": pattern_fb, "vibe": vibe_fb},
+                "note": note,
+                "context": ctx,
+                "meta": meta,
+                "reasons": reasons,
+                "outfit": {k: v.get("id") for k, v in last_outfit.items()},
+                "outfit_meta_snapshot": {k: {
+                    "name": v.get("name"),
+                    "color": v.get("color","unknown"),
+                    "pattern": v.get("pattern","unknown"),
+                    "vibe": v.get("vibe","unknown"),
+                } for k, v in last_outfit.items()}
+            })
+            save_feedback(logs)
+
+            profile = load_profile()
+            profile = update_taste_from_feedback(profile, last_outfit, rating, fb_temp, color_fb, pattern_fb, vibe_fb)
+            save_profile(profile)
+
+            st.success("저장 완료! 이제 다음 추천부터 취향이 반영돼요 ✅")
+            st.session_state.pop("last_outfit", None)
+            st.rerun()
 
 # =========================
-# 3) Recommend
+# PAGE: REPORT
 # =========================
-st.markdown("## 3) 🗓️ 오늘 상황 기반 코디 추천 (취향 학습 반영)")
-st.caption(f"개인 온도 보정(temp_bias): {profile.get('temp_bias',0):+.1f}°C")
-situation = st.selectbox("오늘 상황", SITUATIONS)
-st.caption("상황 힌트: " + situation_hint(situation))
-optional_style = st.selectbox("스타일도 고려할래? (선택)", ["선택안함"] + STYLES, index=0)
-user_style_primary = None if optional_style == "선택안함" else optional_style
+else:
+    st.markdown("## 📊 피드백 리포트 (상황별/상의색/AI리랭크 비교)")
 
-if st.button("OOTD 추천"):
     profile = load_profile()
-    closet_now = load_closet()
-    chosen, top_candidates, meta, ai_pick = recommend(
-        profile=profile,
-        closet=closet_now,
-        weather=weather,
-        situation=situation,
-        user_style_primary=user_style_primary,
-        do_ai_rerank=(use_openai and use_ai_rerank and client)
-    )
-    if not chosen:
-        st.error("추천 실패: top/bottom/shoes를 최소 1개씩 등록해줘!")
+    logs = load_feedback()
+    taste = profile.get("taste", {})
+
+    st.markdown("<div class='smallcard'>", unsafe_allow_html=True)
+    st.write("⭐ 평균 별점:", float(taste.get("avg_rating", 0.0)))
+    st.write("🧾 피드백 누적:", int(taste.get("rating_count", 0)), "회")
+    st.write("🌡️ 온도 보정값(temp_bias):", f"{float(profile.get('temp_bias', 0.0)):+.1f}°C")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    if not logs:
+        st.info("아직 피드백이 없어요. 메인 페이지에서 추천 후 피드백을 남겨주세요!")
         st.stop()
 
-    outfit = chosen["outfit"]
-    reasons = chosen["reasons"]
+    st.markdown("### 1) 🗓️ 상황별 별점 평균")
+    by_situation = {}
+    for l in logs:
+        ctx = l.get("context", {}) or {}
+        sit = ctx.get("situation", "unknown")
+        r = l.get("rating")
+        if isinstance(r, int):
+            by_situation.setdefault(sit, []).append(r)
 
-    st.session_state["last_outfit"] = outfit
-    st.session_state["last_reasons"] = reasons
-    st.session_state["last_meta"] = meta
-    st.session_state["last_ctx"] = {"weather": weather, "situation": situation, "user_style_primary": user_style_primary}
+    rows = []
+    for sit, arr in by_situation.items():
+        if arr:
+            rows.append({"situation": sit, "count": len(arr), "avg_rating": round(sum(arr)/len(arr), 3)})
+    rows.sort(key=lambda x: (x["avg_rating"], x["count"]), reverse=True)
+    st.dataframe(rows, use_container_width=True)
 
-    st.markdown("### ✨ 추천 결과")
-    for k, v in outfit.items():
-        st.markdown("<div class='card'>", unsafe_allow_html=True)
-        if v.get("image"):
-            st.image(v["image"], width=220)
-        st.markdown(f"**{k.upper()} | {v.get('name','')}**")
-        st.caption(f"color:{v.get('color')} | pattern:{v.get('pattern')} | warmth:{v.get('warmth')} | vibe:{v.get('vibe')}")
-        if v.get("desc"):
-            st.caption("AI: " + v["desc"])
+    st.markdown("### 2) 🎨 추천 상의 색이 '별로'였던 날 TOP")
+    top_color_bad = {}
+    bad_rows = []
+    for l in logs:
+        sf = l.get("style_feedback", {}) or {}
+        if sf.get("color") != "별로":
+            continue
+        snap = l.get("outfit_meta_snapshot", {}) or {}
+        top_meta = snap.get("top", {}) or {}
+        c = top_meta.get("color", "unknown")
+        top_color_bad[c] = top_color_bad.get(c, 0) + 1
+        bad_rows.append({
+            "time": l.get("time", ""),
+            "situation": (l.get("context", {}) or {}).get("situation", ""),
+            "rating": l.get("rating", ""),
+            "top_name": top_meta.get("name", ""),
+            "top_color": c
+        })
+
+    if top_color_bad:
+        st.write("상위 비선호(상의 색) 집계:", sorted(top_color_bad.items(), key=lambda x: x[1], reverse=True)[:10])
+        st.caption("최근 '색 별로' 피드백 로그(20)")
+        st.dataframe(list(reversed(bad_rows[-20:])), use_container_width=True)
+    else:
+        st.info("아직 '색 조합 = 별로' 피드백이 없어요.")
+
+    st.markdown("### 3) 🤖 AI 리랭크 ON/OFF 비교")
+    agg = {"ON": {"count": 0, "sum": 0}, "OFF": {"count": 0, "sum": 0}}
+    for l in logs:
+        meta = l.get("meta", {}) or {}
+        on = bool(meta.get("ai_rerank", False))
+        key = "ON" if on else "OFF"
+        r = l.get("rating")
+        if isinstance(r, int):
+            agg[key]["count"] += 1
+            agg[key]["sum"] += r
+
+    comp_rows = []
+    for k in ["ON", "OFF"]:
+        cnt = agg[k]["count"]
+        avg = (agg[k]["sum"] / cnt) if cnt else 0.0
+        comp_rows.append({"AI_rerank": k, "count": cnt, "avg_rating": round(avg, 3)})
+    st.dataframe(comp_rows, use_container_width=True)
+
+    st.markdown("### 🧠 학습된 취향 Top")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown("<div class='smallcard'>", unsafe_allow_html=True)
+        st.write("🎨 색 선호/비선호")
+        st.write("선호:", top_items(taste.get("color_pref", {}), 6))
+        st.write("비선호:", top_items(taste.get("color_avoid", {}), 6))
+        st.markdown("</div>", unsafe_allow_html=True)
+    with c2:
+        st.markdown("<div class='smallcard'>", unsafe_allow_html=True)
+        st.write("🧩 패턴 선호/비선호")
+        st.write("선호:", top_items(taste.get("pattern_pref", {}), 6))
+        st.write("비선호:", top_items(taste.get("pattern_avoid", {}), 6))
+        st.markdown("</div>", unsafe_allow_html=True)
+    with c3:
+        st.markdown("<div class='smallcard'>", unsafe_allow_html=True)
+        st.write("🧠 vibe 선호/비선호")
+        st.write("선호:", top_items(taste.get("vibe_pref", {}), 6))
+        st.write("비선호:", top_items(taste.get("vibe_avoid", {}), 6))
         st.markdown("</div>", unsafe_allow_html=True)
 
-    st.markdown("### ✅ 추천 근거(요약)")
-    for rr in reasons[:14]:
-        st.caption("• " + rr)
-
-    if ai_pick and ai_pick.get("why"):
-        st.markdown("### 🤖 AI 리랭크 이유")
-        st.write(ai_pick["why"])
-
-    with st.expander("상위 후보 5개(점수)", expanded=False):
-        for c in top_candidates[:5]:
-            o = c["outfit"]
-            st.write(f"- 점수 {c['score']}: ",
-                     {k: o[k].get("name") for k in o.keys()})
-
-st.markdown("---")
-
-# =========================
-# 4) Feedback (AI 중심 강화)
-# =========================
-st.markdown("## 4) ⭐ 피드백 (온도 + 별점 + 색/패턴/분위기)")
-last_outfit = st.session_state.get("last_outfit")
-if not last_outfit:
-    st.info("먼저 3)에서 OOTD 추천을 받아야 피드백을 남길 수 있어요.")
-else:
-    # ✅ 전체 만족도 별점
-    rating = st.slider("전체 만족도(별점)", 1, 5, 4)
-
-    # ✅ 기존 온도
-    fb_temp = st.radio("체감 온도", ["추움", "딱 좋음", "더움"], horizontal=True)
-
-    # ✅ 스타일 피드백(학습)
-    colA, colB, colC = st.columns(3)
-    with colA:
-        color_fb = st.radio("색 조합", ["좋음", "상관없음", "별로"], index=1, horizontal=True)
-    with colB:
-        pattern_fb = st.radio("패턴 조합", ["좋음", "상관없음", "별로"], index=1, horizontal=True)
-    with colC:
-        vibe_fb = st.radio("분위기(vibe)", ["좋음", "상관없음", "별로"], index=1, horizontal=True)
-
-    note = st.text_input("한 줄 코멘트(선택)", placeholder="예: 색은 좋은데 패턴이 과했어 / 더 포멀했으면")
-
-    if st.button("피드백 저장"):
-        logs = load_feedback()
-        ctx = st.session_state.get("last_ctx", {})
-        meta = st.session_state.get("last_meta", {})
-        reasons = st.session_state.get("last_reasons", [])
-
-        logs.append({
-            "time": datetime.now().isoformat(),
-            "rating": rating,
-            "temp_feedback": fb_temp,
-            "style_feedback": {"color": color_fb, "pattern": pattern_fb, "vibe": vibe_fb},
-            "note": note,
-            "context": ctx,
-            "meta": meta,
-            "reasons": reasons,
-            "outfit": {k: v.get("id") for k, v in last_outfit.items()}
+    st.markdown("### 🧾 최근 피드백 로그(20)")
+    recent = list(reversed(logs[-20:]))
+    rows2 = []
+    for l in recent:
+        sf = l.get("style_feedback", {}) or {}
+        ctx = l.get("context", {}) or {}
+        meta = l.get("meta", {}) or {}
+        snap = l.get("outfit_meta_snapshot", {}) or {}
+        top_color = (snap.get("top", {}) or {}).get("color", "")
+        rows2.append({
+            "time": l.get("time",""),
+            "situation": ctx.get("situation",""),
+            "rating": l.get("rating",""),
+            "temp": l.get("temp_feedback",""),
+            "color_fb": sf.get("color",""),
+            "pattern_fb": sf.get("pattern",""),
+            "vibe_fb": sf.get("vibe",""),
+            "top_color": top_color,
+            "AI_rerank": "ON" if bool(meta.get("ai_rerank", False)) else "OFF",
+            "note": l.get("note",""),
         })
-        save_feedback(logs)
-
-        profile = load_profile()
-        profile = update_taste_from_feedback(profile, last_outfit, rating, fb_temp, color_fb, pattern_fb, vibe_fb)
-        save_profile(profile)
-
-        st.success("저장 완료! 이제 다음 추천부터 색/패턴/분위기 취향까지 반영돼요 ✅")
-        st.session_state.pop("last_outfit", None)
-        st.rerun()
-
-st.markdown("---")
-
-# =========================
-# 5) Taste dashboard
-# =========================
-st.markdown("## 5) 📊 내 취향(학습 결과)")
-profile = load_profile()
-taste = profile.get("taste", {})
-st.write("⭐ 평균 별점:", taste.get("avg_rating", 0), "(누적", taste.get("rating_count", 0), "회)")
-st.write("🌡️ 온도 보정값:", f"{profile.get('temp_bias',0):+.1f}°C")
-
-def top_items(d, n=6):
-    return sorted(d.items(), key=lambda x: x[1], reverse=True)[:n]
-
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.markdown("### 🎨 색")
-    st.write("선호:", top_items(taste.get("color_pref", {})))
-    st.write("비선호:", top_items(taste.get("color_avoid", {})))
-with col2:
-    st.markdown("### 🧩 패턴")
-    st.write("선호:", top_items(taste.get("pattern_pref", {})))
-    st.write("비선호:", top_items(taste.get("pattern_avoid", {})))
-with col3:
-    st.markdown("### 🧠 분위기(vibe)")
-    st.write("선호:", top_items(taste.get("vibe_pref", {})))
-    st.write("비선호:", top_items(taste.get("vibe_avoid", {})))
-
-logs = load_feedback()
-if logs:
-    st.caption(f"최근 피드백 {min(len(logs), 100)}개를 기반으로 취향이 누적됩니다.")
+    st.dataframe(rows2, use_container_width=True)
