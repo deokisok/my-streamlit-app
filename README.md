@@ -26,6 +26,7 @@ ootd는 “일일 코디 결정 비용”을 줄이는 데 초점을 둔 AI 추�
 아이디를 저장해 옷장 저장 가능
 
 기술 스택)
+
 Streamlit: UI/상태/페이지 구성
 OpenAI API)
 Vision: 사진 → 메타 추출
