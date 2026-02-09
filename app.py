@@ -89,35 +89,7 @@ def top_items(d, n=6):
     return sorted((d or {}).items(), key=lambda x: x[1], reverse=True)[:n]
 
 # =========================
-# ✅ Image Normalization
-# =========================
-NORMAL_SIZE = 640  # 옷장 이미지 통일 크기
-
-def normalize_to_square(im: Image.Image, size: int = NORMAL_SIZE) -> Image.Image:
-    """
-    1) EXIF 회전 보정
-    2) 중앙 기준 정사각형 크롭
-    3) size x size로 리사이즈
-    """
-    try:
-        im = ImageOps.exif_transpose(im)
-    except:
-        pass
-
-    im = im.convert("RGB")
-    w, h = im.size
-    side = min(w, h)
-    left = (w - side) // 2
-    top = (h - side) // 2
-    im = im.crop((left, top, left + side, top + side))
-    im = im.resize((size, size), Image.LANCZOS)
-    return im
-
-# ImageOps를 사용하므로 import 추가
-from PIL import ImageOps
-
-# =========================
-# Sidebar
+# Sidebar (User / Keys / Location / Page)
 # =========================
 with st.sidebar:
     st.header("👤 사용자")
@@ -224,7 +196,7 @@ def get_weather(lat, lon):
     }
 
 # =========================
-# Vocab
+# Vocab / situations
 # =========================
 CATEGORIES = ["top", "bottom", "outer", "shoes"]
 STYLES = ["casual", "dandy", "hiphop", "sporty"]
@@ -302,7 +274,7 @@ def draw_simple_icon(draw: ImageDraw.ImageDraw, category: str, x: int, y: int, w
         draw.rounded_rectangle([x+w*0.25, y+h*0.75, x+w*0.82, y+h*0.86], radius=18,
                                outline=stroke, width=4, fill=fill)
 
-def make_placeholder_image(name: str, category: str, out_path: Path, size=(NORMAL_SIZE, NORMAL_SIZE)):
+def make_placeholder_image(name: str, category: str, out_path: Path, size=(640, 640)):
     img = Image.new("RGB", size, (24, 24, 24))
     draw = ImageDraw.Draw(img)
     draw.rounded_rectangle([24, 18, size[0]-24, 82], radius=22, fill=(36, 36, 36))
@@ -320,7 +292,7 @@ def make_placeholder_image(name: str, category: str, out_path: Path, size=(NORMA
     img.save(out_path)
 
 # =========================
-# OpenAI Vision (optional)
+# OpenAI Vision: photo -> meta
 # =========================
 def analyze_clothing_image_with_openai(image_bytes: bytes, fallback_name: str = ""):
     if not client:
@@ -368,7 +340,7 @@ JSON만 반환.
         return {"color":"unknown","pattern":"unknown","warmth":"unknown","vibe":"unknown","desc":""}
 
 # =========================
-# Taste learning + scoring
+# Taste learning
 # =========================
 def inc(d: dict, key: str, delta: int = 1):
     if not key: return
@@ -429,7 +401,6 @@ def taste_score_for_outfit(profile: dict, outfit: dict):
     va = taste.get("vibe_avoid", {})
     score = 0
     reasons = []
-
     colors = [it.get("color","unknown") for it in outfit.values()]
     patterns = [it.get("pattern","unknown") for it in outfit.values()]
     vibes = [it.get("vibe","unknown") for it in outfit.values()]
@@ -511,7 +482,7 @@ def vibe_fit_score(vibes: dict, situation: str):
         desired |= {"dandy","minimal","cute"}
     if any(x in situation for x in ["운동","러닝"]):
         desired |= {"sporty"}
-    if any(x in situation for x in ["학교","수업","꾸안꾸","집콕","근처","마실"]):
+    if any(x in situation for x in ["학교","수업","꾸안꾸","집콕","근처 마실"]):
         desired |= {"casual","minimal"}
     if "여행" in situation or "나들이" in situation:
         desired |= {"casual","street","minimal"}
@@ -532,6 +503,7 @@ def vibe_fit_score(vibes: dict, situation: str):
 def ai_rerank_outfits(weather, situation, profile, candidates):
     if not client or not candidates:
         return None
+
     taste = profile.get("taste", {})
     taste_summary = {
         "color_pref_top": top_items(taste.get("color_pref", {}), 5),
@@ -541,6 +513,7 @@ def ai_rerank_outfits(weather, situation, profile, candidates):
         "vibe_pref_top": top_items(taste.get("vibe_pref", {}), 5),
         "vibe_avoid_top": top_items(taste.get("vibe_avoid", {}), 5),
     }
+
     simplified = []
     for c in candidates[:6]:
         o = c["outfit"]
@@ -556,6 +529,7 @@ def ai_rerank_outfits(weather, situation, profile, candidates):
                 "vibe": o[k].get("vibe"),
             } for k in o.keys()}
         })
+
     prompt = f"""
 너는 OOTD 코디 선택 심사위원이야.
 "사용자 취향 요약"을 강하게 반영해서 날씨/상황에 가장 적합한 후보 1개를 골라.
@@ -568,6 +542,7 @@ def ai_rerank_outfits(weather, situation, profile, candidates):
 
 반환: {{"best_id":"c1","why":"짧게 1~2문장"}}
 """.strip()
+
     try:
         resp = client.responses.create(model="gpt-4.1-mini", input=prompt)
         m = re.search(r"\{.*\}", resp.output_text, re.DOTALL)
@@ -579,7 +554,7 @@ def ai_rerank_outfits(weather, situation, profile, candidates):
         return None
 
 # =========================
-# Recommend
+# Recommendation
 # =========================
 def recommend(profile, closet, weather, situation, user_style_primary=None, do_ai_rerank=False):
     temp_bias = float(profile.get("temp_bias", 0.0))
@@ -738,7 +713,8 @@ st.markdown("</div>", unsafe_allow_html=True)
 # PAGE: MAIN
 # =========================
 if page == "🏠 메인(등록/추천)":
-    st.markdown("## 1) 📸 옷장 등록 (이미지 크기 정규화)")
+    # ---------- 1) Register ----------
+    st.markdown("## 1) 📸 옷장 등록(사진 분석으로 색/패턴/분위기 저장)")
     closet = load_closet()
 
     c1, c2 = st.columns([1,1])
@@ -747,7 +723,6 @@ if page == "🏠 메인(등록/추천)":
         item_type = st.selectbox("카테고리", CATEGORIES, key="cloth_type")
         name = st.text_input("아이템 이름(권장)", placeholder="예: 검정 셔츠, 슬랙스", key="cloth_name")
         auto_analyze = st.toggle("저장 시 사진 자동 분석(Vision)", value=True)
-        st.caption(f"✅ 저장 시 이미지가 {NORMAL_SIZE}x{NORMAL_SIZE}로 자동 정규화돼요.")
 
     with c2:
         st.markdown("### 🎯 스타일 태그(선택)")
@@ -772,26 +747,13 @@ if page == "🏠 메인(등록/추천)":
         if meta_prev:
             st.write(meta_prev)
 
-        if img:
-            st.markdown("### 🖼️ 저장될 이미지 미리보기(정규화)")
-            try:
-                im = normalize_to_square(Image.open(img), NORMAL_SIZE)
-                st.image(im, width=260)
-            except:
-                st.info("미리보기 실패(이미지 확인 필요)")
-
     if st.button("옷장에 저장"):
         closet = load_closet()
         iid = f"item_{datetime.now().timestamp()}"
         img_path = IMG_DIR / f"{iid}.png"
 
         if img:
-            try:
-                im = normalize_to_square(Image.open(img), NORMAL_SIZE)
-                im.save(img_path)
-            except:
-                # 실패 시 원본 저장
-                Image.open(img).convert("RGB").save(img_path)
+            Image.open(img).save(img_path)
         else:
             make_placeholder_image(name if name else item_type, item_type, img_path)
 
@@ -812,16 +774,15 @@ if page == "🏠 메인(등록/추천)":
             "vibe": vision_meta.get("vibe","unknown"),
             "desc": vision_meta.get("desc",""),
             "created_at": datetime.now().isoformat(),
-            "source": "manual_photo_norm"
+            "source": "manual_photo"
         })
         save_closet(closet)
-        st.success("저장 완료! (이미지 정규화 + 추천/학습 반영) ✅")
-        st.rerun()
+        st.success("저장 완료! (추천에서 색/패턴/분위기/취향 학습 반영)")
 
     st.markdown("---")
 
-    # ---------- 2) Closet ----------
-    st.markdown("## 2) 👕 내 옷장 (그리드 정규화)")
+    # ---------- 2) Closet + delete confirm ----------
+    st.markdown("## 2) 👕 내 옷장")
     closet = load_closet()
     if "pending_delete_id" not in st.session_state:
         st.session_state["pending_delete_id"] = None
@@ -833,11 +794,8 @@ if page == "🏠 메인(등록/추천)":
         for i, item in enumerate(closet):
             with cols[i % 4]:
                 st.markdown("<div class='smallcard'>", unsafe_allow_html=True)
-
-                # ✅ 옷장에서도 표시 크기 통일
                 if item.get("image"):
                     st.image(item["image"], use_container_width=True)
-
                 st.caption(item.get("name",""))
                 st.caption(f"{item.get('type')} | color:{item.get('color')} | pattern:{item.get('pattern')}")
                 st.caption(f"warmth:{item.get('warmth')} | vibe:{item.get('vibe')}")
@@ -923,6 +881,7 @@ if page == "🏠 메인(등록/추천)":
         for rr in reasons[:14]:
             st.caption("• " + rr)
 
+        # ✅ AI 리랭크 한 줄 이유 + ON/OFF 상태 저장 위해 meta에 포함됨
         if ai_pick and ai_pick.get("why"):
             st.markdown("### 🤖 AI 리랭크 이유")
             st.write(ai_pick["why"])
@@ -966,9 +925,10 @@ if page == "🏠 메인(등록/추천)":
                 "style_feedback": {"color": color_fb, "pattern": pattern_fb, "vibe": vibe_fb},
                 "note": note,
                 "context": ctx,
-                "meta": meta,
+                "meta": meta,  # ✅ ai_rerank True/False 포함
                 "reasons": reasons,
                 "outfit": {k: v.get("id") for k, v in last_outfit.items()},
+                # ✅ 리포트에서 "상의 색 별로였던 날" 계산용
                 "outfit_meta_snapshot": {k: {
                     "name": v.get("name"),
                     "color": v.get("color","unknown"),
@@ -1006,7 +966,11 @@ else:
         st.info("아직 피드백이 없어요. 메인 페이지에서 추천 후 피드백을 남겨주세요!")
         st.stop()
 
+    # -------------------------
+    # 1) 상황별 별점 평균
+    # -------------------------
     st.markdown("### 1) 🗓️ 상황별 별점 평균")
+
     by_situation = {}
     for l in logs:
         ctx = l.get("context", {}) or {}
@@ -1018,11 +982,21 @@ else:
     rows = []
     for sit, arr in by_situation.items():
         if arr:
-            rows.append({"situation": sit, "count": len(arr), "avg_rating": round(sum(arr)/len(arr), 3)})
+            rows.append({
+                "situation": sit,
+                "count": len(arr),
+                "avg_rating": round(sum(arr)/len(arr), 3)
+            })
     rows.sort(key=lambda x: (x["avg_rating"], x["count"]), reverse=True)
     st.dataframe(rows, use_container_width=True)
 
+    # -------------------------
+    # 2) "상의 색이 별로"였던 날 TOP
+    #    조건: style_feedback.color == "별로"
+    #    -> top 아이템의 color를 집계
+    # -------------------------
     st.markdown("### 2) 🎨 추천 상의 색이 '별로'였던 날 TOP")
+
     top_color_bad = {}
     bad_rows = []
     for l in logs:
@@ -1032,24 +1006,39 @@ else:
         snap = l.get("outfit_meta_snapshot", {}) or {}
         top_meta = snap.get("top", {}) or {}
         c = top_meta.get("color", "unknown")
-        top_color_bad[c] = top_color_bad.get(c, 0) + 1
+        t = l.get("time", "")
+        r = l.get("rating", "")
+        sit = (l.get("context", {}) or {}).get("situation", "")
+        nm = top_meta.get("name", "")
+        inc_val = 1
+        top_color_bad[c] = top_color_bad.get(c, 0) + inc_val
         bad_rows.append({
-            "time": l.get("time", ""),
-            "situation": (l.get("context", {}) or {}).get("situation", ""),
-            "rating": l.get("rating", ""),
-            "top_name": top_meta.get("name", ""),
+            "time": t,
+            "situation": sit,
+            "rating": r,
+            "top_name": nm,
             "top_color": c
         })
 
     if top_color_bad:
         st.write("상위 비선호(상의 색) 집계:", sorted(top_color_bad.items(), key=lambda x: x[1], reverse=True)[:10])
-        st.caption("최근 '색 별로' 피드백 로그(20)")
+        st.caption("아래는 실제로 '색 조합 별로'를 준 로그 중 최근 항목들입니다.")
         st.dataframe(list(reversed(bad_rows[-20:])), use_container_width=True)
     else:
         st.info("아직 '색 조합 = 별로' 피드백이 없어요.")
 
+    # -------------------------
+    # 3) AI 리랭크 ON/OFF 비교
+    #    meta.ai_rerank True/False 기준으로
+    #    평균 별점, 건수 비교
+    # -------------------------
     st.markdown("### 3) 🤖 AI 리랭크 ON/OFF 비교")
-    agg = {"ON": {"count": 0, "sum": 0}, "OFF": {"count": 0, "sum": 0}}
+
+    agg = {
+        "ON": {"count": 0, "sum": 0},
+        "OFF": {"count": 0, "sum": 0},
+    }
+
     for l in logs:
         meta = l.get("meta", {}) or {}
         on = bool(meta.get("ai_rerank", False))
@@ -1064,8 +1053,13 @@ else:
         cnt = agg[k]["count"]
         avg = (agg[k]["sum"] / cnt) if cnt else 0.0
         comp_rows.append({"AI_rerank": k, "count": cnt, "avg_rating": round(avg, 3)})
-    st.dataframe(comp_rows, use_container_width=True)
 
+    st.dataframe(comp_rows, use_container_width=True)
+    st.caption("해석 팁: ON 평균이 높으면 'AI가 최종 선택'이 만족도를 높였을 가능성이 큼.")
+
+    # -------------------------
+    # Taste snapshot
+    # -------------------------
     st.markdown("### 🧠 학습된 취향 Top")
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -1087,6 +1081,9 @@ else:
         st.write("비선호:", top_items(taste.get("vibe_avoid", {}), 6))
         st.markdown("</div>", unsafe_allow_html=True)
 
+    # -------------------------
+    # Recent logs
+    # -------------------------
     st.markdown("### 🧾 최근 피드백 로그(20)")
     recent = list(reversed(logs[-20:]))
     rows2 = []
